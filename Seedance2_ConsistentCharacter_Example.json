@@ -1,20 +1,21 @@
 {
-  "last_node_id": 7,
-  "last_link_id": 7,
+  "last_node_id": 6,
+  "last_link_id": 6,
   "nodes": [
     {
       "id": 1,
-      "type": "Seedance2ApiKey",
-      "pos": [50, 450],
-      "size": { "0": 300, "1": 80 },
+      "type": "Seedance2BytePlusConfig",
+      "pos": [50, 420],
+      "size": { "0": 340, "1": 110 },
       "flags": {},
       "order": 0,
       "mode": 0,
       "outputs": [
-        { "name": "api_key", "type": "STRING", "links": [1, 3], "slot_index": 0 }
+        { "name": "api_key", "type": "STRING", "links": [1], "slot_index": 0 },
+        { "name": "endpoint", "type": "STRING", "links": [2], "slot_index": 1 }
       ],
-      "properties": { "Node name for S&R": "Seedance2ApiKey" },
-      "widgets_values": [""]
+      "properties": { "Node name for S&R": "Seedance2BytePlusConfig" },
+      "widgets_values": ["", ""]
     },
     {
       "id": 2,
@@ -25,87 +26,53 @@
       "order": 1,
       "mode": 0,
       "outputs": [
-        { "name": "IMAGE", "type": "IMAGE", "links": [2], "slot_index": 0 },
-        { "name": "MASK",  "type": "MASK",  "links": null, "slot_index": 1 }
+        { "name": "IMAGE", "type": "IMAGE", "links": [3], "slot_index": 0 },
+        { "name": "MASK", "type": "MASK", "links": null, "slot_index": 1 }
       ],
       "properties": { "Node name for S&R": "LoadImage" },
       "widgets_values": ["reference_photo.jpg", "image"]
     },
     {
       "id": 3,
-      "type": "Seedance2Character",
-      "pos": [420, 50],
-      "size": { "0": 380, "1": 260 },
+      "type": "Seedance2ConsistentVideo",
+      "pos": [450, 50],
+      "size": { "0": 460, "1": 330 },
       "flags": {},
       "order": 2,
       "mode": 0,
       "inputs": [
-        { "name": "api_key", "type": "STRING", "link": 1,    "slot_index": 0 },
-        { "name": "image_1", "type": "IMAGE",  "link": 2,    "slot_index": 1 },
-        { "name": "image_2", "type": "IMAGE",  "link": null, "slot_index": 2 },
-        { "name": "image_3", "type": "IMAGE",  "link": null, "slot_index": 3 }
+        { "name": "api_key", "type": "STRING", "link": 1, "slot_index": 0 },
+        { "name": "endpoint", "type": "STRING", "link": 2, "slot_index": 1 },
+        { "name": "sheet_image", "type": "IMAGE", "link": 3, "slot_index": 2 },
+        { "name": "sheet_url", "type": "STRING", "link": null, "slot_index": 3 },
+        { "name": "scene_image_2", "type": "IMAGE", "link": null, "slot_index": 4 },
+        { "name": "scene_image_3", "type": "IMAGE", "link": null, "slot_index": 5 }
       ],
       "outputs": [
-        { "name": "sheet_image",  "type": "IMAGE",  "links": [4, 5], "slot_index": 0 },
-        { "name": "sheet_url",    "type": "STRING", "links": null,   "slot_index": 1 },
-        { "name": "character_id", "type": "STRING", "links": null,   "slot_index": 2 }
-      ],
-      "properties": { "Node name for S&R": "Seedance2Character" },
-      "widgets_values": [
-        "cyberpunk jacket with neon accents, glowing visor, black tactical pants"
-      ]
-    },
-    {
-      "id": 4,
-      "type": "PreviewImage",
-      "pos": [420, 410],
-      "size": { "0": 380, "1": 270 },
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [
-        { "name": "images", "type": "IMAGE", "link": 4 }
-      ],
-      "properties": { "Node name for S&R": "PreviewImage" }
-    },
-    {
-      "id": 5,
-      "type": "Seedance2ConsistentVideo",
-      "pos": [870, 50],
-      "size": { "0": 430, "1": 310 },
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [
-        { "name": "api_key",       "type": "STRING", "link": 3,    "slot_index": 0 },
-        { "name": "sheet_image",   "type": "IMAGE",  "link": 5,    "slot_index": 1 },
-        { "name": "sheet_url",     "type": "STRING", "link": null, "slot_index": 2 },
-        { "name": "scene_image_2", "type": "IMAGE",  "link": null, "slot_index": 3 },
-        { "name": "scene_image_3", "type": "IMAGE",  "link": null, "slot_index": 4 }
-      ],
-      "outputs": [
-        { "name": "video_url",   "type": "STRING", "links": [6],  "slot_index": 0 },
-        { "name": "first_frame", "type": "IMAGE",  "links": [7],  "slot_index": 1 },
-        { "name": "request_id",  "type": "STRING", "links": null, "slot_index": 2 }
+        { "name": "video_url", "type": "STRING", "links": [4], "slot_index": 0 },
+        { "name": "first_frame", "type": "IMAGE", "links": [5], "slot_index": 1 },
+        { "name": "request_id", "type": "STRING", "links": null, "slot_index": 2 }
       ],
       "properties": { "Node name for S&R": "Seedance2ConsistentVideo" },
       "widgets_values": [
         "@image1 walks through a neon-lit city at night, cinematic slow motion, 4K",
         "16:9",
         "basic",
-        5
+        5,
+        false,
+        ""
       ]
     },
     {
-      "id": 6,
+      "id": 4,
       "type": "Seedance2VideoSaver",
-      "pos": [1370, 50],
+      "pos": [980, 50],
       "size": { "0": 340, "1": 130 },
       "flags": {},
-      "order": 5,
+      "order": 3,
       "mode": 0,
       "inputs": [
-        { "name": "video_url", "type": "STRING", "link": 6 }
+        { "name": "video_url", "type": "STRING", "link": 4 }
       ],
       "outputs": [
         { "name": "frames", "type": "IMAGE", "links": null, "slot_index": 0 }
@@ -114,38 +81,50 @@
       "widgets_values": ["seedance2_character", "mp4", 25]
     },
     {
-      "id": 7,
+      "id": 5,
       "type": "PreviewImage",
-      "pos": [870, 460],
+      "pos": [450, 430],
       "size": { "0": 430, "1": 270 },
       "flags": {},
-      "order": 6,
+      "order": 4,
       "mode": 0,
       "inputs": [
-        { "name": "images", "type": "IMAGE", "link": 7 }
+        { "name": "images", "type": "IMAGE", "link": 5 }
+      ],
+      "properties": { "Node name for S&R": "PreviewImage" }
+    },
+    {
+      "id": 6,
+      "type": "PreviewImage",
+      "pos": [50, 210],
+      "size": { "0": 300, "1": 270 },
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        { "name": "images", "type": "IMAGE", "link": 6 }
       ],
       "properties": { "Node name for S&R": "PreviewImage" }
     }
   ],
   "links": [
     [1, 1, 0, 3, 0, "STRING"],
-    [2, 2, 0, 3, 1, "IMAGE"],
-    [3, 1, 0, 5, 0, "STRING"],
-    [4, 3, 0, 4, 0, "IMAGE"],
-    [5, 3, 0, 5, 1, "IMAGE"],
-    [6, 5, 0, 6, 0, "STRING"],
-    [7, 5, 1, 7, 0, "IMAGE"]
+    [2, 1, 1, 3, 1, "STRING"],
+    [3, 2, 0, 3, 2, "IMAGE"],
+    [4, 3, 0, 4, 0, "STRING"],
+    [5, 3, 1, 5, 0, "IMAGE"],
+    [6, 2, 0, 6, 0, "IMAGE"]
   ],
   "groups": [
     {
-      "title": "Step 1 — Generate Character Sheet",
-      "bounding": [30, 30, 800, 680],
+      "title": "Step 1 - Load Reference Image",
+      "bounding": [30, 30, 380, 680],
       "color": "#3f789e",
       "font_size": 14
     },
     {
-      "title": "Step 2 — Generate Consistent Video",
-      "bounding": [848, 30, 900, 680],
+      "title": "Step 2 - Generate Reference Video",
+      "bounding": [430, 30, 900, 680],
       "color": "#3d6b44",
       "font_size": 14
     }

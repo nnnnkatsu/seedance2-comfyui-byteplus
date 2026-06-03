@@ -1,4 +1,4 @@
-# Seedance 2.0 ComfyUI Nodes
+# Seedance 2.0 ComfyUI Nodes for BytePlus ModelArk
 
 > **⚠️ BytePlus Direct API Version** — This is a custom fork with direct BytePlus API integration. If you're using the original muapi.ai service, please use [Anil-matcha/seedance2-comfyui](https://github.com/nnnnkatsu/seedance2-comfyui-byteplus) instead.
 
@@ -6,28 +6,14 @@
 > Generate stunning AI videos directly inside ComfyUI using the [muapi.ai](https://muapi.ai) API.
 > If you wish to check the api documentation check this [Seedance 2.0 api](https://github.com/Anil-matcha/Seedance-2.0-API)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![ComfyUI](https://img.shields.io/badge/ComfyUI-Custom%20Node-blue)](https://github.com/comfyanonymous/ComfyUI)
-[![Seedance 2.0](https://img.shields.io/badge/Model-Seedance%202.0-green)](https://muapi.ai)
+This fork changes the original muapi.ai-based node pack to call BytePlus directly:
 
----
+- Uses `Authorization: Bearer <ARK_API_KEY>`.
+- Creates video tasks with `POST /api/v3/contents/generations/tasks`.
+- Polls task status with `GET /api/v3/contents/generations/tasks/{id}`.
+- Uses a visible `endpoint` field in ComfyUI for your BytePlus `ep-...` endpoint ID.
 
-## Related Projects
-
-- [seedance-2-generator](https://github.com/SamurAIGPT/seedance-2-generator) — Ready-made Next.js SaaS built on Seedance 2 — no ComfyUI needed
-- [seedance-2.0-watermark-remover](https://github.com/SamurAIGPT/seedance-2.0-watermark-remover) — Remove watermarks from your Seedance 2 outputs
-- [n8n-nodes-seedance2](https://github.com/Anil-matcha/n8n-nodes-seedance2) — Automate Seedance 2 generation in n8n workflows
-- [muapi-comfyui](https://github.com/SamurAIGPT/muapi-comfyui) — ComfyUI nodes for 100+ MuAPI models including Seedance
-
-## What is Seedance 2.0?
-
-Seedance 2.0 is ByteDance's latest video generation model, capable of producing high-quality, photorealistic videos from text prompts or reference images. It supports:
-
-- **Text-to-Video** — generate video from a text description
-- **Image-to-Video** — animate up to 9 reference images with motion guidance
-- **Omni Reference** — combine images, video clips, and audio as multi-modal reference inputs
-- **Video Extend** — seamlessly extend any generated video
-- **Consistent Character** — generate a 4K multi-panel character sheet from reference photos; use `@character:<id>` inline in any prompt, or wire the sheet image directly into **Consistent Character Video** for tighter face fidelity
+The original project is [Anil-matcha/seedance2-comfyui](https://github.com/Anil-matcha/seedance2-comfyui).
 
 ---
 
@@ -35,14 +21,15 @@ Seedance 2.0 is ByteDance's latest video generation model, capable of producing 
 
 | Node | Description |
 |------|-------------|
-| 🔑 Seedance 2.0 API Key | Set your key once — wire to all nodes |
-| 🌱 Seedance 2.0 Text-to-Video | Generate video from a text prompt |
-| 🌱 Seedance 2.0 Image-to-Video | Animate up to 9 reference images |
-| 🌱 Seedance 2.0 Omni Reference | Multi-modal: combine images, video clips, and audio |
-| 🌱 Seedance 2.0 Consistent Character | Generate a 4K character sheet from 1–3 reference photos |
-| 🌱 Seedance 2.0 Consistent Character Video | Animate a scene with locked character identity from a sheet |
-| 🌱 Seedance 2.0 Extend | Extend a previously generated video |
-| 🌱 Seedance 2.0 Save Video | Download URL → disk + ComfyUI IMAGE frames |
+| `Seedance 2.0 BytePlus Config` | Recommended first node. Set BytePlus `api_key` and `endpoint`, then wire both outputs to generation nodes. |
+| `Seedance 2.0 API Key` | Legacy-compatible key-only node. Useful only if endpoint is supplied in each generation node or by environment/config. |
+| `Seedance 2.0 Text-to-Video` | Generate video from a text prompt. |
+| `Seedance 2.0 Image-to-Video` | Generate video from up to 9 ComfyUI image references. |
+| `Seedance 2.0 Omni Reference` | Generate video using text plus image, video, and audio references. |
+| `Seedance 2.0 Consistent Character Video` | Generate a reference-image-guided video using `sheet_image` or `sheet_url`. |
+| `Seedance 2.0 Extend` | Continue from a completed BytePlus task ID, public video URL, or `asset://...` video reference. |
+| `Seedance 2.0 Save Video` | Download a generated video URL to disk and return ComfyUI IMAGE frames. |
+| `Seedance 2.0 Consistent Character` | Deprecated for this BytePlus direct fork. The original node was a muapi-only character-sheet helper. |
 
 ---
 
@@ -54,6 +41,7 @@ Seedance 2.0 is ByteDance's latest video generation model, capable of producing 
 3. Restart ComfyUI
 
 ### Manual
+
 ```bash
 cd ComfyUI/custom_nodes
 git clone https://github.com/nnnnkatsu/seedance2-comfyui-byteplus
@@ -64,205 +52,220 @@ pip install -r seedance2-comfyui/requirements.txt
 
 ## Quick Start
 
-1. Sign up at [muapi.ai](https://muapi.ai) and go to **Dashboard → API Keys → Create Key**
-2. Right-click the ComfyUI canvas → **Add Node** → **🌱 Seedance 2.0**
-3. Add a **🔑 Seedance 2.0 API Key** node, paste your key, and wire its output to any generation node
-4. Write a prompt and hit **Queue Prompt**
+1. Add `Seedance 2.0 BytePlus Config`.
+2. Paste your BytePlus ModelArk API key into `api_key`.
+3. Paste your BytePlus endpoint ID into `endpoint`.
+   - Endpoint IDs usually look like `ep-...`.
+4. Add a generation node, for example `Seedance 2.0 Text-to-Video`.
+5. Wire `api_key` and `endpoint` from the config node into the generation node.
+6. Write a prompt and queue the workflow.
 
-> **Tip:** If you use the [MuAPI CLI](https://github.com/SamurAIGPT/muapi-cli), run `muapi auth configure --api-key YOUR_KEY` once and all nodes will pick it up automatically — no need to paste the key anywhere.
+The ComfyUI UI says `endpoint` because direct BytePlus users normally receive an `ep-...` endpoint ID. Internally, the BytePlus API request field is still named `model`; the node maps `endpoint` to that official API field.
+
+---
+
+## Configuration
+
+### Config Node
+
+Use this for most workflows:
+
+```text
+[Seedance 2.0 BytePlus Config]
+  api_key  -> generation node api_key
+  endpoint -> generation node endpoint
+```
+
+### Environment Variables
+
+You can leave node fields blank and configure values with environment variables:
+
+```bash
+ARK_API_KEY=your_byteplus_api_key
+SEEDANCE2_ENDPOINT=your_endpoint_id
+BYTEPLUS_ARK_BASE_URL=https://ark.ap-southeast.bytepluses.com/api/v3
+```
+
+Backward-compatible endpoint variables are also accepted:
+
+```bash
+SEEDANCE2_MODEL=your_endpoint_id
+BYTEPLUS_SEEDANCE_MODEL=your_endpoint_id
+ARK_MODEL=your_endpoint_id
+```
+
+### Config File
+
+You can also create `~/.byteplus/seedance2-comfyui.json`:
+
+```json
+{
+  "api_key": "your_byteplus_api_key",
+  "endpoint": "your_endpoint_id",
+  "base_url": "https://ark.ap-southeast.bytepluses.com/api/v3"
+}
+```
+
+For compatibility, `endpoint_id` and `model` are also accepted as endpoint keys in this config file.
 
 ---
 
 ## Node Reference
 
-### 🔑 Seedance 2.0 API Key
+### Seedance 2.0 BytePlus Config
 
-Set your muapi.ai API key once and wire the output to all generation nodes. Alternatively, leave every `api_key` field blank — nodes automatically read from `~/.muapi/config.json` if you've authenticated via the CLI.
+| Field | Description |
+|-------|-------------|
+| `api_key` | BytePlus ModelArk API key. |
+| `endpoint` | BytePlus ModelArk endpoint ID, usually `ep-...`. |
+
+Outputs: `api_key`, `endpoint`
 
 ---
 
-### 🌱 Seedance 2.0 Text-to-Video
+### Seedance 2.0 Text-to-Video
 
-Generate a video from a text description.
+Generate a video from a text prompt.
 
 | Field | Values | Default |
 |-------|--------|---------|
-| `api_key` | Optional — leave blank if using the API Key node or CLI config | — |
-| `prompt` | Text describing the video | — |
-| `aspect_ratio` | 16:9 / 9:16 / 4:3 / 3:4 | 16:9 |
-| `quality` | basic / high | basic |
-| `duration` | 5 / 10 / 15 seconds | 5 |
+| `prompt` | Text prompt | Example cinematic prompt |
+| `aspect_ratio` | `16:9`, `9:16`, `4:3`, `3:4` | `16:9` |
+| `quality` | `basic`, `high` | `basic` |
+| `duration` | `5`, `10`, `15` seconds | `5` |
+| `api_key` | Optional if supplied by config/env/file | empty |
+| `endpoint` | Optional if supplied by config/env/file | empty |
+| `generate_audio` | Whether BytePlus should generate audio | `true` |
 
-**Outputs:** `video_url` · `first_frame` (IMAGE) · `request_id`
-
----
-
-### 🌱 Seedance 2.0 Image-to-Video
-
-Animate reference images into a video. Connect up to 9 images via `image_1` … `image_9` and reference them in the prompt using `@image1` … `@image9`.
-
-**Example prompt:**
-```
-The cat in @image1 walks gracefully through a sunlit garden.
-@image1 transforms into @image2 with a smooth dissolve transition.
-```
+Outputs: `video_url`, `first_frame`, `request_id`
 
 ---
 
-### 🌱 Seedance 2.0 Omni Reference
+### Seedance 2.0 Image-to-Video
 
-Multi-modal video generation that combines images, video clips, and audio clips as reference material alongside a text prompt. Use `@image1`…`@image9`, `@video1`…`@video3`, and `@audio1`…`@audio3` to reference media in the prompt.
+Generate a video from a prompt and up to 9 ComfyUI images.
 
-**Example prompt:**
+Reference connected images in your prompt with `@image1`, `@image2`, and so on. The node converts this legacy syntax to BytePlus-style references internally.
+
+```text
+The character in @image1 walks through a sunlit garden.
 ```
-A person @image1 walking on the beach at sunset, cinematic lighting, with @audio1 as background music.
-```
 
-| Field | Values | Default |
-|-------|--------|---------|
-| `prompt` | Text with optional `@imageN`, `@videoN`, `@audioN` references | — |
-| `aspect_ratio` | 21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16 | 16:9 |
-| `duration` | 4 – 15 seconds (integer) | 5 |
-| `image_1` … `image_9` | Optional — ComfyUI IMAGE tensors (auto-uploaded) | — |
-| `video_url_1` … `video_url_3` | Optional — MP4 URL (max 15s each) | — |
-| `audio_url_1` … `audio_url_3` | Optional — MP3/WAV URL (total max 15s) | — |
-
-**Outputs:** `video_url` · `first_frame` (IMAGE) · `request_id`
+Image tensors are sent as base64 data URLs.
 
 ---
 
-### 🌱 Seedance 2.0 Consistent Character
+### Seedance 2.0 Omni Reference
 
-Generate a 4K / 21:9 multi-panel character sheet (front, back, side profile, action pose, facial expressions, accessories) from 1–3 reference photos of a real person.
+Generate video using text plus optional image, video, and audio references.
 
-| Field | Description |
-|-------|-------------|
-| `image_1` … `image_3` | Reference photos of the person (at least 1 required; clear frontal/3-4 angle shots work best) |
-| `outfit_description` | Describe the desired outfit/style for the character |
+Supported prompt references:
 
-**Outputs:**
-
-| Output | Type | Description |
-|--------|------|-------------|
-| `sheet_image` | IMAGE | Character sheet as a ComfyUI tensor — wire directly into Consistent Character Video |
-| `sheet_url` | STRING | CDN URL of the character sheet image |
-| `character_id` | STRING | `request_id` of this generation — use as `@character:<id>` in T2V/I2V/Omni prompts |
-
-**Recommended workflow — wire `sheet_image` into Consistent Character Video:**
-```
-[LoadImage] ──→ [🌱 Consistent Character] ──(sheet_image)──→ [🌱 Consistent Character Video]
-                    [outfit_description]       (sheet_url)          [scene prompt]
+```text
+@image1 ... @image9
+@video1 ... @video3
+@audio1 ... @audio3
 ```
 
-**Alternative — use `@character:<id>` in any prompt (simpler but looser face fidelity):**
-```
-[🌱 Consistent Character] character_id ──→ (paste into prompt) ──→ [🌱 Text-to-Video]
+Reference handling:
 
-T2V prompt: "@character:{character_id} rides a motorcycle through a neon-lit city at night"
-```
+- ComfyUI image tensors are sent as base64 image data URLs.
+- Local audio files are sent as base64 audio data URLs.
+- Reference videos must be public `https://...` URLs, `asset://...` IDs, or existing data URLs.
+- Local video files are not uploaded by this direct BytePlus API path.
 
 ---
 
-### 🌱 Seedance 2.0 Consistent Character Video
+### Seedance 2.0 Consistent Character Video
 
-Generate a video scene with locked character identity. Anchors on the character sheet image as `@image1` for maximum face/identity preservation.
+This node now works as a reference-image-guided video node.
 
-Connect `sheet_image` (or paste `sheet_url`) from the **Consistent Character** node.
+Use one of:
 
-| Field | Description |
-|-------|-------------|
-| `prompt` | Scene description. `@image1` refers to the character sheet and is auto-prepended if omitted. |
-| `sheet_image` | IMAGE tensor from Consistent Character (preferred) |
-| `sheet_url` | Paste the sheet URL if you don't have the tensor |
-| `scene_image_2`, `scene_image_3` | Optional extra scene/background images (referenced as `@image2`, `@image3`) |
-| `aspect_ratio` | 16:9 / 9:16 / 4:3 / 3:4 |
-| `quality` | basic / high |
-| `duration` | 5 / 10 / 15 seconds |
+- `sheet_image`: a ComfyUI IMAGE tensor, such as a loaded character/reference image.
+- `sheet_url`: a public image URL or BytePlus `asset://...` image reference.
 
-**Outputs:** `video_url` · `first_frame` (IMAGE) · `request_id`
-
-**Example prompt:**
-```
-@image1 walks through a rain-soaked neon city, cinematic slow motion
-```
+If the prompt does not contain `@image1` or `[Image 1]`, the node prepends `@image1` automatically so the reference image anchors the generation.
 
 ---
 
-### 🌱 Seedance 2.0 Extend
+### Seedance 2.0 Extend
 
-Continue any completed Seedance 2.0 video. Connect the `request_id` output from a generation node.
+Continue from a source video.
 
-| Field | Description |
-|-------|-------------|
-| `request_id` | From a completed T2V or I2V generation |
-| `prompt` | Optional — guide the continuation |
-| `quality` | basic / high |
-| `duration` | 5 / 10 / 15 seconds to add |
+`request_id` accepts:
+
+- A completed BytePlus task ID from this node pack.
+- A public `https://...` video URL.
+- A BytePlus `asset://...` video reference.
+
+The node retrieves the source task if needed, then submits a new task using the source video as `reference_video`.
 
 ---
 
-### 🌱 Seedance 2.0 Save Video
+### Seedance 2.0 Consistent Character
 
-Downloads the generated video to ComfyUI's output folder and returns all frames as an IMAGE tensor for use with other nodes (preview, VHS, upscale, etc.).
+This node is kept only so old workflows fail with a clear message.
+
+The original `Seedance2Character` node depended on muapi.ai-specific character-sheet behavior. BytePlus ModelArk's direct Seedance video generation API does not expose the same character-sheet generation endpoint through this node pack.
+
+Use `Seedance 2.0 Consistent Character Video` with an existing reference image, public sheet URL, or BytePlus `asset://...` digital character/image reference instead.
 
 ---
 
 ## Example Workflows
 
-Load any `.json` file from this repo via **File → Load** in ComfyUI.
+Load these JSON files from ComfyUI with **File -> Load**:
 
 | File | Description |
 |------|-------------|
-| `Seedance2_T2V_Example.json` | Basic text-to-video generation |
-| `Seedance2_ConsistentCharacter_Example.json` | Full consistent character workflow: reference photo → character sheet → video |
+| `Seedance2_T2V_Example.json` | BytePlus Config -> Text-to-Video -> Save Video |
+| `Seedance2_ConsistentCharacter_Example.json` | Load Image -> Consistent Character Video -> Save Video |
 
-**Text-to-Video:**
-```
-[🔑 API Key] ──────────────────────────────────┐
-                                                ↓
-[🌱 Text-to-Video] → video_url → [🌱 Save Video] → frames → [Preview Image]
-```
-
-**Consistent Character:**
-```
-[🔑 API Key] ─────────────────────────────────────────────────────────────┐
-                                                                           ↓
-[LoadImage] → [🌱 Consistent Character] → sheet_image → [🌱 Consistent Character Video] → [🌱 Save Video]
-               [outfit_description]          ↓               [scene prompt]
-                                    [Preview Image]                ↓
-                                    (character sheet)      [Preview Image]
-                                                           (first frame)
-```
+Both examples use `Seedance 2.0 BytePlus Config` and require your own `api_key` and `endpoint`.
 
 ---
 
-## API
+## API Details
 
-This node pack uses the **muapi.ai** API under the hood:
-- **T2V:** `POST https://api.muapi.ai/api/v1/seedance-v2.0-t2v`
-- **I2V:** `POST https://api.muapi.ai/api/v1/seedance-v2.0-i2v`
-- **Omni:** `POST https://api.muapi.ai/api/v1/seedance-2.0-omni-reference`
-- **Character:** `POST https://api.muapi.ai/api/v1/seedance-2-character`
-- **Extend:** `POST https://api.muapi.ai/api/v1/seedance-v2.0-extend`
-- **Poll:** `GET https://api.muapi.ai/api/v1/predictions/{id}/result`
-- **Upload:** `POST https://api.muapi.ai/api/v1/upload_file`
+This fork uses BytePlus ModelArk directly:
 
-Authentication is a single `x-api-key` header — no session tokens required.
+| Action | Endpoint |
+|--------|----------|
+| Create task | `POST https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks` |
+| Poll task | `GET https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks/{id}` |
+
+Authentication:
+
+```text
+Authorization: Bearer <ARK_API_KEY>
+```
+
+Important naming note:
+
+- ComfyUI field: `endpoint`
+- BytePlus request body field: `model`
+- Value to paste: your BytePlus `ep-...` endpoint ID
+
+---
+
+## Limitations
+
+- `Seedance2Character` is not implemented for direct BytePlus API usage.
+- Local video reference upload is not supported by this direct generation path.
+- Signed BytePlus output URLs can expire; save generated videos locally if you need to keep them.
+- The old muapi CLI config `~/.muapi/config.json` is not used by this fork.
 
 ---
 
 ## Requirements
 
-- Python ≥ 3.8
-- `requests` ≥ 2.28 · `Pillow` ≥ 9.0 · `numpy` ≥ 1.23 · `torch` ≥ 2.0 · `opencv-python` ≥ 4.7
-
----
-
-## Want More Models?
-
-This repo is focused on Seedance 2.0 only. If you need access to **100+ models** — Kling, Veo3, Flux, HiDream, GPT-image-1.5, Imagen4, Wan, lipsync, audio, image enhancement and more — check out the full MuAPI ComfyUI node pack:
-
-**[SamurAIGPT/muapi-comfyui](https://github.com/SamurAIGPT/muapi-comfyui)** — ComfyUI nodes for every muapi.ai model in one place.
+- Python >= 3.8
+- `requests` >= 2.28
+- `Pillow` >= 9.0
+- `numpy` >= 1.23
+- `torch` >= 2.0
+- `opencv-python` >= 4.7
 
 ---
 
