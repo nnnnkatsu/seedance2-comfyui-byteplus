@@ -209,6 +209,8 @@ This node is kept only so old workflows fail with a clear message.
 
 The original `Seedance2Character` node depended on muapi.ai-specific character-sheet behavior. BytePlus ModelArk's direct Seedance video generation API does not expose the same character-sheet generation endpoint through this node pack.
 
+This deprecated node intentionally has no `endpoint` field because there is no BytePlus direct endpoint for that character-sheet operation.
+
 Use `Seedance 2.0 Consistent Character Video` with an existing reference image, public sheet URL, or BytePlus `asset://...` digital character/image reference instead.
 
 ---

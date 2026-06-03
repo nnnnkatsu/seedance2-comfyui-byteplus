@@ -11,7 +11,7 @@ Focused nodes for Seedance 2.0 video generation via BytePlus ModelArk.
   Seedance2ConsistentVideo    - ModelArk reference_image task
 
 Reference image workflow:
-  LoadImage → Seedance2Character → Seedance2ConsistentVideo
+  LoadImage → Seedance2ConsistentVideo
 
 Auth:     Authorization: Bearer header
 Create:   POST /api/v3/contents/generations/tasks
@@ -585,7 +585,7 @@ class Seedance2BytePlusConfig:
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("api_key", "endpoint")
     FUNCTION = "run"
-    CATEGORY = "験 Seedance 2.0"
+    CATEGORY = "🌱 Seedance 2.0"
 
     def run(self, api_key, endpoint):
         return (_load_api_key(api_key), _load_endpoint(endpoint))
@@ -739,17 +739,11 @@ class Seedance2Character:
     """
     Seedance 2.0 Consistent Character
     -----------------------------------
-    Generate a multi-panel character sheet (front, back, side, action pose,
-    facial expressions, accessories) from 1–3 reference photos of a real person.
+    Deprecated muapi-only character-sheet helper.
+    BytePlus direct Seedance video generation does not expose this operation.
 
-    Outputs:
-      • sheet_image  — ComfyUI IMAGE tensor of the character sheet (wire into
-                       Seedance2ConsistentVideo or any image node)
-      • sheet_url    — CDN URL of the character sheet image
-      • character_id — request_id of this generation (for reference/logging)
-
-    Typical workflow:
-      LoadImage → Seedance2Character → Seedance2ConsistentVideo
+    Use:
+      LoadImage → Seedance2ConsistentVideo
     """
     @classmethod
     def INPUT_TYPES(cls):
@@ -765,15 +759,16 @@ class Seedance2Character:
     RETURN_TYPES = ("IMAGE", "STRING", "STRING")
     RETURN_NAMES = ("sheet_image", "sheet_url", "character_id")
     FUNCTION = "run"
-    CATEGORY = "🌱 Seedance 2.0"
+    CATEGORY = "Seedance 2.0/Deprecated"
 
     def run(self, outfit_description, api_key="",
             image_1=None, image_2=None, image_3=None):
         raise RuntimeError(
             "Seedance2Character was a MuAPI-only helper. BytePlus ModelArk does "
             "not expose a direct character-sheet generation endpoint through the "
-            "Seedance video generation API. Use a BytePlus asset:// digital "
-            "character ID in Omni/ConsistentVideo, or provide an existing sheet_image/sheet_url."
+            "Seedance video generation API, so this deprecated node intentionally "
+            "has no endpoint field. Use Seedance2ConsistentVideo with an existing "
+            "reference image, public sheet_url, or BytePlus asset:// reference instead."
         )
         api_key = _load_api_key(api_key)
         tensors = [image_1, image_2, image_3]
@@ -815,12 +810,12 @@ class Seedance2ConsistentVideo:
     """
     Seedance 2.0 Consistent Character Video
     -----------------------------------------
-    Generate a video that maintains character identity from a character sheet
-    produced by Seedance2Character.
+    Generate a video that maintains character identity from an existing
+    reference image, public image URL, or BytePlus asset:// image reference.
 
-    Wire sheet_image (or sheet_url) from Seedance2Character into this node,
-    then write your scene prompt. The character sheet is automatically passed
-    as the first reference image and referenced as @image1 in the prompt.
+    Wire a Load Image output to sheet_image, or paste sheet_url, then write
+    your scene prompt. The reference image is automatically passed as the first
+    reference image and referenced as @image1 in the prompt.
 
     You can also wire in up to 2 additional scene/background images
     (referenced as @image2, @image3 in your prompt).
@@ -841,7 +836,7 @@ class Seedance2ConsistentVideo:
             "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
                 "tooltip": "BytePlus ModelArk endpoint ID, for example ep-..."}),
             "generate_audio": ("BOOLEAN", {"default": True}),
-            # Character sheet — connect sheet_image from Seedance2Character
+            # Reference image, for example from ComfyUI Load Image.
             "sheet_image":     ("IMAGE",),
             # Fallback: paste the sheet_url string if you don't have the tensor
             "sheet_url":       ("STRING", {"multiline": False, "default": ""}),
@@ -909,7 +904,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Seedance2ImageToVideo":      "🌱 Seedance 2.0 Image-to-Video",
     "Seedance2Extend":            "🌱 Seedance 2.0 Extend",
     "Seedance2Omni":              "🌱 Seedance 2.0 Omni Reference",
-    "Seedance2Character":         "🌱 Seedance 2.0 Consistent Character",
+    "Seedance2Character":         "Deprecated - MuAPI-only Character Sheet (Unsupported)",
     "Seedance2ConsistentVideo":   "🌱 Seedance 2.0 Consistent Character Video",
 }
 NODE_DISPLAY_NAME_MAPPINGS["Seedance2BytePlusConfig"] = "Seedance 2.0 BytePlus Config"
