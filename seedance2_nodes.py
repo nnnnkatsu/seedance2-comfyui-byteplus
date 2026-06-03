@@ -908,4 +908,4 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Seedance2Character":         "Deprecated - MuAPI-only Character Sheet (Unsupported)",
     "Seedance2ConsistentVideo":   "🌱 Seedance 2.0 Consistent Character Video",
 }
-NODE_DISPLAY_NAME_MAPPINGS["Seedance2BytePlusConfig"] = "Seedance 2.0 BytePlus Config"
+NODE_DISPLAY_NAME_MAPPINGS["Seedance2BytePlusConfig"] = "🌱 Seedance 2.0 BytePlus Config"
