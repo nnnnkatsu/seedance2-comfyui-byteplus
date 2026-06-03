@@ -40,7 +40,14 @@ CONFIG_PATHS = (
     "~/.ark/config.json",
 )
 API_KEY_ENV_VARS = ("ARK_API_KEY", "BYTEPLUS_ARK_API_KEY", "BYTEPLUS_API_KEY")
-MODEL_ENV_VARS = ("SEEDANCE2_MODEL", "BYTEPLUS_SEEDANCE_MODEL", "ARK_MODEL")
+ENDPOINT_ENV_VARS = (
+    "SEEDANCE2_ENDPOINT",
+    "BYTEPLUS_SEEDANCE_ENDPOINT",
+    "ARK_ENDPOINT",
+    "SEEDANCE2_MODEL",
+    "BYTEPLUS_SEEDANCE_MODEL",
+    "ARK_MODEL",
+)
 BASE_URL_ENV_VARS = ("BYTEPLUS_ARK_BASE_URL", "ARK_BASE_URL")
 QUALITY_TO_RESOLUTION = {
     "basic": "480p",
@@ -106,21 +113,21 @@ def _load_api_key(api_key_input):
     )
 
 
-def _load_model(model_input):
+def _load_endpoint(endpoint_input):
     cfg = _read_config()
-    model = _first_value(
-        model_input,
-        *(os.environ.get(name, "") for name in MODEL_ENV_VARS),
-        cfg.get("model", ""),
-        cfg.get("endpoint_id", ""),
+    endpoint = _first_value(
+        endpoint_input,
+        *(os.environ.get(name, "") for name in ENDPOINT_ENV_VARS),
         cfg.get("endpoint", ""),
+        cfg.get("endpoint_id", ""),
+        cfg.get("model", ""),
     )
-    if model:
-        return model
+    if endpoint:
+        return endpoint
     raise RuntimeError(
-        "No BytePlus model/endpoint configured. Paste your endpoint ID into the "
-        "model field, wire the model output from Seedance2BytePlusConfig, set "
-        "SEEDANCE2_MODEL, or add model to ~/.byteplus/seedance2-comfyui.json."
+        "No BytePlus endpoint configured. Paste your endpoint ID into the "
+        "endpoint field, wire the endpoint output from Seedance2BytePlusConfig, "
+        "set SEEDANCE2_ENDPOINT, or add endpoint to ~/.byteplus/seedance2-comfyui.json."
     )
 
 
@@ -261,14 +268,14 @@ def _content_audio(url, role="reference_audio"):
     return item
 
 
-def _build_payload(model, prompt, aspect_ratio, quality, duration, generate_audio, content_tail=None):
+def _build_payload(endpoint, prompt, aspect_ratio, quality, duration, generate_audio, content_tail=None):
     content = []
     if prompt and prompt.strip():
         content.append(_content_text(prompt))
     if content_tail:
         content.extend(content_tail)
     return {
-        "model": _load_model(model),
+        "model": _load_endpoint(endpoint),
         "content": content,
         "resolution": _quality_to_resolution(quality),
         "ratio": aspect_ratio or "adaptive",
@@ -278,9 +285,9 @@ def _build_payload(model, prompt, aspect_ratio, quality, duration, generate_audi
     }
 
 
-def _submit(api_key, model, payload):
+def _submit(api_key, endpoint, payload):
     payload = dict(payload)
-    payload["model"] = _load_model(model or payload.get("model", ""))
+    payload["model"] = _load_endpoint(endpoint or payload.get("model", ""))
     resp = requests.post(
         f"{_base_url()}/contents/generations/tasks",
         headers=_json_headers(api_key),
@@ -417,8 +424,8 @@ class Seedance2TextToVideo:
             "duration": ([5, 10, 15], {"default": 5}),
         }, "optional": {
             "api_key": ("STRING", {"multiline": False, "default": ""}),
-            "model": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
-                "tooltip": "BytePlus ModelArk model ID or endpoint ID"}),
+            "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
+                "tooltip": "BytePlus ModelArk endpoint ID, for example ep-..."}),
             "generate_audio": ("BOOLEAN", {"default": True}),
         }}
     RETURN_TYPES = ("STRING", "IMAGE", "STRING")
@@ -426,11 +433,11 @@ class Seedance2TextToVideo:
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, prompt, aspect_ratio, quality, duration, api_key="", model="", generate_audio=True):
+    def run(self, prompt, aspect_ratio, quality, duration, api_key="", endpoint="", generate_audio=True):
         api_key = _load_api_key(api_key)
-        payload = _build_payload(model, prompt, aspect_ratio, quality, duration, generate_audio)
+        payload = _build_payload(endpoint, prompt, aspect_ratio, quality, duration, generate_audio)
         print("[Seedance2 T2V] Submitting...")
-        rid = _submit(api_key, model, payload)
+        rid = _submit(api_key, endpoint, payload)
         result = _poll(api_key, rid)
         url = _output_url(result)
         print(f"[Seedance2 T2V] Done → {url}")
@@ -456,8 +463,8 @@ class Seedance2ImageToVideo:
             "duration": ([5, 10, 15], {"default": 5}),
         }, "optional": {
             "api_key": ("STRING", {"multiline": False, "default": ""}),
-            "model": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
-                "tooltip": "BytePlus ModelArk model ID or endpoint ID"}),
+            "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
+                "tooltip": "BytePlus ModelArk endpoint ID, for example ep-..."}),
             "generate_audio": ("BOOLEAN", {"default": True}),
             "image_1": ("IMAGE",), "image_2": ("IMAGE",), "image_3": ("IMAGE",),
             "image_4": ("IMAGE",), "image_5": ("IMAGE",), "image_6": ("IMAGE",),
@@ -468,7 +475,7 @@ class Seedance2ImageToVideo:
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, prompt, aspect_ratio, quality, duration, api_key="", model="", generate_audio=True,
+    def run(self, prompt, aspect_ratio, quality, duration, api_key="", endpoint="", generate_audio=True,
             image_1=None, image_2=None, image_3=None, image_4=None, image_5=None,
             image_6=None, image_7=None, image_8=None, image_9=None):
         api_key = _load_api_key(api_key)
@@ -481,9 +488,9 @@ class Seedance2ImageToVideo:
                 images_list.append(_upload_image(api_key, img))
         if not images_list: raise ValueError("At least one image required.")
         content_tail = [_content_image(url, "reference_image") for url in images_list]
-        payload = _build_payload(model, prompt, aspect_ratio, quality, duration, generate_audio, content_tail)
+        payload = _build_payload(endpoint, prompt, aspect_ratio, quality, duration, generate_audio, content_tail)
         print(f"[Seedance2 I2V] Submitting ({len(images_list)} image(s))...")
-        rid = _submit(api_key, model, payload)
+        rid = _submit(api_key, endpoint, payload)
         result = _poll(api_key, rid)
         url = _output_url(result)
         print(f"[Seedance2 I2V] Done → {url}")
@@ -508,8 +515,8 @@ class Seedance2Extend:
             "duration": ([5, 10, 15], {"default": 5}),
         }, "optional": {
             "api_key": ("STRING", {"multiline": False, "default": ""}),
-            "model": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
-                "tooltip": "BytePlus ModelArk model ID or endpoint ID"}),
+            "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
+                "tooltip": "BytePlus ModelArk endpoint ID, for example ep-..."}),
             "generate_audio": ("BOOLEAN", {"default": True}),
             "prompt": ("STRING", {"multiline": True, "default": "",
                 "tooltip": "Optional continuation prompt"}),
@@ -519,7 +526,7 @@ class Seedance2Extend:
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, request_id, quality, duration, api_key="", model="", generate_audio=True, prompt=""):
+    def run(self, request_id, quality, duration, api_key="", endpoint="", generate_audio=True, prompt=""):
         api_key = _load_api_key(api_key)
         if not request_id.strip(): raise ValueError("request_id required.")
         source = request_id.strip()
@@ -533,9 +540,9 @@ class Seedance2Extend:
             source_url = _output_url(source_result)
         extend_prompt = prompt.strip() or "Continue the reference video naturally."
         content_tail = [_content_video(source_url, "reference_video")]
-        payload = _build_payload(model, extend_prompt, "adaptive", quality, duration, generate_audio, content_tail)
+        payload = _build_payload(endpoint, extend_prompt, "adaptive", quality, duration, generate_audio, content_tail)
         print(f"[Seedance2 Extend] Submitting extension from {source}...")
-        new_id = _submit(api_key, model, payload)
+        new_id = _submit(api_key, endpoint, payload)
         result = _poll(api_key, new_id)
         url = _output_url(result)
         print(f"[Seedance2 Extend] Done → {url}")
@@ -565,23 +572,23 @@ class Seedance2ApiKey:
 
 class Seedance2BytePlusConfig:
     """
-    Store BytePlus API key and model/endpoint ID once and wire both outputs.
+    Store BytePlus API key and endpoint ID once and wire both outputs.
     """
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
             "api_key": ("STRING", {"multiline": False, "default": "",
                 "tooltip": "Your BytePlus ModelArk API key"}),
-            "model": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
-                "tooltip": "BytePlus ModelArk model ID or endpoint ID"}),
+            "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
+                "tooltip": "BytePlus ModelArk endpoint ID, for example ep-..."}),
         }}
     RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("api_key", "model")
+    RETURN_NAMES = ("api_key", "endpoint")
     FUNCTION = "run"
     CATEGORY = "験 Seedance 2.0"
 
-    def run(self, api_key, model):
-        return (_load_api_key(api_key), _load_model(model))
+    def run(self, api_key, endpoint):
+        return (_load_api_key(api_key), _load_endpoint(endpoint))
 
 
 class Seedance2Omni:
@@ -626,8 +633,8 @@ class Seedance2Omni:
             "duration": ("INT", {"default": 5, "min": 4, "max": 15, "step": 1}),
         }, "optional": {
             "api_key":      ("STRING", {"multiline": False, "default": ""}),
-            "model": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
-                "tooltip": "BytePlus ModelArk model ID or endpoint ID"}),
+            "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
+                "tooltip": "BytePlus ModelArk endpoint ID, for example ep-..."}),
             "generate_audio": ("BOOLEAN", {"default": True}),
             "character_id": ("STRING", {"multiline": False, "default": "",
                 "tooltip": "BytePlus asset:// ID or asset ID for a digital character"}),
@@ -655,7 +662,7 @@ class Seedance2Omni:
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, prompt, aspect_ratio, quality, duration, api_key="", model="", generate_audio=True,
+    def run(self, prompt, aspect_ratio, quality, duration, api_key="", endpoint="", generate_audio=True,
             character_id="",
             image_1=None, image_2=None, image_3=None, image_4=None, image_5=None,
             image_6=None, image_7=None, image_8=None, image_9=None,
@@ -716,12 +723,12 @@ class Seedance2Omni:
         content_tail.extend(_content_video(url, "reference_video") for url in video_files)
         content_tail.extend(_content_audio(url, "reference_audio") for url in audio_files)
 
-        payload = _build_payload(model, prompt, aspect_ratio, quality, duration, generate_audio, content_tail)
+        payload = _build_payload(endpoint, prompt, aspect_ratio, quality, duration, generate_audio, content_tail)
 
         print(f"[Seedance2 Omni] PAYLOAD: {payload}")
         print(f"[Seedance2 Omni] Submitting "
               f"({len(images_list)} image(s), {len(video_files)} video(s), {len(audio_files)} audio(s))...")
-        rid = _submit(api_key, model, payload)
+        rid = _submit(api_key, endpoint, payload)
         result = _poll(api_key, rid)
         url = _output_url(result)
         print(f"[Seedance2 Omni] Done → {url}")
@@ -831,8 +838,8 @@ class Seedance2ConsistentVideo:
             "duration": ([5, 10, 15], {"default": 5}),
         }, "optional": {
             "api_key":         ("STRING", {"multiline": False, "default": ""}),
-            "model": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
-                "tooltip": "BytePlus ModelArk model ID or endpoint ID"}),
+            "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
+                "tooltip": "BytePlus ModelArk endpoint ID, for example ep-..."}),
             "generate_audio": ("BOOLEAN", {"default": True}),
             # Character sheet — connect sheet_image from Seedance2Character
             "sheet_image":     ("IMAGE",),
@@ -847,7 +854,7 @@ class Seedance2ConsistentVideo:
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, prompt, aspect_ratio, quality, duration, api_key="", model="", generate_audio=True,
+    def run(self, prompt, aspect_ratio, quality, duration, api_key="", endpoint="", generate_audio=True,
             sheet_image=None, sheet_url="", scene_image_2=None, scene_image_3=None):
         api_key = _load_api_key(api_key)
 
@@ -870,15 +877,15 @@ class Seedance2ConsistentVideo:
                 print(f"[Seedance2 ConsistentVideo] Encoding scene image {i}...")
                 images_list.append(_upload_image(api_key, img))
 
-        # Ensure @image1 is present so the model anchors on the character sheet
+        # Ensure @image1 is present so the reference image anchors the scene.
         if "@image1" not in prompt and "[Image 1]" not in prompt:
             prompt = f"@image1 {prompt.strip()}"
 
         content_tail = [_content_image(url, "reference_image") for url in images_list]
-        payload = _build_payload(model, prompt, aspect_ratio, quality, duration, generate_audio, content_tail)
+        payload = _build_payload(endpoint, prompt, aspect_ratio, quality, duration, generate_audio, content_tail)
 
         print(f"[Seedance2 ConsistentVideo] Submitting with {len(images_list)} image(s)...")
-        rid = _submit(api_key, model, payload)
+        rid = _submit(api_key, endpoint, payload)
         result = _poll(api_key, rid)
         url = _output_url(result)
         print(f"[Seedance2 ConsistentVideo] Done → {url}")

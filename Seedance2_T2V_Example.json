@@ -12,7 +12,7 @@
       "mode": 0,
       "outputs": [
         { "name": "api_key", "type": "STRING", "links": [1], "slot_index": 0 },
-        { "name": "model", "type": "STRING", "links": [2], "slot_index": 1 }
+        { "name": "endpoint", "type": "STRING", "links": [2], "slot_index": 1 }
       ],
       "properties": { "Node name for S&R": "Seedance2BytePlusConfig" },
       "widgets_values": ["", ""]
@@ -27,7 +27,7 @@
       "mode": 0,
       "inputs": [
         { "name": "api_key", "type": "STRING", "link": 1 },
-        { "name": "model", "type": "STRING", "link": 2 }
+        { "name": "endpoint", "type": "STRING", "link": 2 }
       ],
       "outputs": [
         { "name": "video_url", "type": "STRING", "links": [3], "slot_index": 0 },

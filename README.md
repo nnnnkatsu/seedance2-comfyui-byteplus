@@ -68,14 +68,14 @@ This local version calls BytePlus ModelArk directly instead of muapi.ai.
 
 1. Add **Seedance 2.0 BytePlus Config**.
 2. Paste your BytePlus ModelArk API key into `api_key`.
-3. Paste your BytePlus endpoint ID or model ID into `model`.
-4. Wire `api_key` and `model` from the config node into each generation node.
+3. Paste your BytePlus endpoint ID into `endpoint`.
+4. Wire `api_key` and `endpoint` from the config node into each generation node.
 
 You can also leave node fields blank and configure values with environment variables:
 
 ```bash
 ARK_API_KEY=your_byteplus_api_key
-SEEDANCE2_MODEL=your_endpoint_id_or_model_id
+SEEDANCE2_ENDPOINT=your_endpoint_id
 BYTEPLUS_ARK_BASE_URL=https://ark.ap-southeast.bytepluses.com/api/v3
 ```
 
@@ -84,13 +84,14 @@ Or create `~/.byteplus/seedance2-comfyui.json`:
 ```json
 {
   "api_key": "your_byteplus_api_key",
-  "model": "your_endpoint_id_or_model_id",
+  "endpoint": "your_endpoint_id",
   "base_url": "https://ark.ap-southeast.bytepluses.com/api/v3"
 }
 ```
 
 Notes for direct BytePlus use:
 
+- In the BytePlus API request body, the official field name is `model`. In this ComfyUI node UI it is labeled `endpoint`, because direct-contract users should paste their `ep-...` endpoint ID there.
 - ComfyUI `IMAGE` inputs are sent as base64 data URLs.
 - Local audio files are sent as base64 data URLs.
 - Local video files cannot be uploaded into a public generation URL by this API path; use a public `https://...` video URL or a BytePlus `asset://...` reference.
@@ -278,7 +279,7 @@ This local version uses BytePlus ModelArk directly:
 - **Create task:** `POST https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks`
 - **Poll task:** `GET https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks/{id}`
 - **Auth:** `Authorization: Bearer <ARK_API_KEY>`
-- **Model:** use your BytePlus endpoint ID or model ID in the request `model` field.
+- **Endpoint:** paste your BytePlus `ep-...` endpoint ID in the node `endpoint` field. The node sends that value as BytePlus API request field `model`, because that is the official ModelArk parameter name.
 
 The original muapi.ai endpoints listed below are kept only as upstream historical reference.
 
