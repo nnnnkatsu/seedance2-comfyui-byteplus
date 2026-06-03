@@ -900,6 +900,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "Seedance2ApiKey":            "🔑 Seedance 2.0 API Key",
+    "Seedance2BytePlusConfig":    "🌱 Seedance2BytePlusConfig",  
     "Seedance2TextToVideo":       "🌱 Seedance 2.0 Text-to-Video",
     "Seedance2ImageToVideo":      "🌱 Seedance 2.0 Image-to-Video",
     "Seedance2Extend":            "🌱 Seedance 2.0 Extend",
