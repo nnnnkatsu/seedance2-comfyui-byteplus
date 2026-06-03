@@ -1,6 +1,10 @@
 # Seedance 2.0 ComfyUI Nodes for BytePlus ModelArk
 
-ComfyUI custom nodes for Seedance 2.0 video generation through the BytePlus ModelArk API.
+> **⚠️ BytePlus Direct API Version** — This is a custom fork with direct BytePlus API integration. If you're using the original muapi.ai service, please use [Anil-matcha/seedance2-comfyui](https://github.com/nnnnkatsu/seedance2-comfyui-byteplus) instead.
+
+> **ComfyUI custom nodes for Seedance 2.0** — the state-of-the-art video generation model by ByteDance.
+> Generate stunning AI videos directly inside ComfyUI using the [muapi.ai](https://muapi.ai) API.
+> If you wish to check the api documentation check this [Seedance 2.0 api](https://github.com/Anil-matcha/Seedance-2.0-API)
 
 This fork changes the original muapi.ai-based node pack to call BytePlus directly:
 
@@ -31,24 +35,17 @@ The original project is [Anil-matcha/seedance2-comfyui](https://github.com/Anil-
 
 ## Installation
 
-### Via ComfyUI Manager
-
-1. Open **ComfyUI Manager**.
-2. Choose **Install via Git URL**.
-3. Paste this fork URL:
-
-```bash
-https://github.com/nnnnkatsu/seedance2-comfyui-byteplus
-```
-
-4. Restart ComfyUI.
+### Via ComfyUI Manager (recommended)
+1. Open **ComfyUI Manager** → **Install via Git URL**
+2. Paste: `https://github.com/nnnnkatsu/seedance2-comfyui-byteplus`
+3. Restart ComfyUI
 
 ### Manual
 
 ```bash
 cd ComfyUI/custom_nodes
 git clone https://github.com/nnnnkatsu/seedance2-comfyui-byteplus
-pip install -r seedance2-comfyui-byteplus/requirements.txt
+pip install -r seedance2-comfyui/requirements.txt
 ```
 
 ---
