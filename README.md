@@ -62,6 +62,40 @@ pip install -r seedance2-comfyui/requirements.txt
 
 ## Quick Start
 
+### BytePlus Direct API Setup
+
+This local version calls BytePlus ModelArk directly instead of muapi.ai.
+
+1. Add **Seedance 2.0 BytePlus Config**.
+2. Paste your BytePlus ModelArk API key into `api_key`.
+3. Paste your BytePlus endpoint ID or model ID into `model`.
+4. Wire `api_key` and `model` from the config node into each generation node.
+
+You can also leave node fields blank and configure values with environment variables:
+
+```bash
+ARK_API_KEY=your_byteplus_api_key
+SEEDANCE2_MODEL=your_endpoint_id_or_model_id
+BYTEPLUS_ARK_BASE_URL=https://ark.ap-southeast.bytepluses.com/api/v3
+```
+
+Or create `~/.byteplus/seedance2-comfyui.json`:
+
+```json
+{
+  "api_key": "your_byteplus_api_key",
+  "model": "your_endpoint_id_or_model_id",
+  "base_url": "https://ark.ap-southeast.bytepluses.com/api/v3"
+}
+```
+
+Notes for direct BytePlus use:
+
+- ComfyUI `IMAGE` inputs are sent as base64 data URLs.
+- Local audio files are sent as base64 data URLs.
+- Local video files cannot be uploaded into a public generation URL by this API path; use a public `https://...` video URL or a BytePlus `asset://...` reference.
+- `Seedance2Character` was a muapi-only helper and is now marked unsupported. Use a BytePlus digital character asset in Omni/ConsistentVideo, or provide an existing `sheet_image`/`sheet_url`.
+
 1. Sign up at [muapi.ai](https://muapi.ai) and go to **Dashboard → API Keys → Create Key**
 2. Right-click the ComfyUI canvas → **Add Node** → **🌱 Seedance 2.0**
 3. Add a **🔑 Seedance 2.0 API Key** node, paste your key, and wire its output to any generation node
@@ -212,7 +246,7 @@ Load any `.json` file from this repo via **File → Load** in ComfyUI.
 | File | Description |
 |------|-------------|
 | `Seedance2_T2V_Example.json` | Basic text-to-video generation |
-| `Seedance2_ConsistentCharacter_Example.json` | Full consistent character workflow: reference photo → character sheet → video |
+| `Seedance2_ConsistentCharacter_Example.json` | BytePlus-compatible reference image workflow: reference image -> video |
 
 **Text-to-Video:**
 ```
@@ -222,6 +256,9 @@ Load any `.json` file from this repo via **File → Load** in ComfyUI.
 ```
 
 **Consistent Character:**
+
+BytePlus direct mode does not run `Seedance2Character`; the example uses `LoadImage -> Seedance2ConsistentVideo` directly.
+
 ```
 [🔑 API Key] ─────────────────────────────────────────────────────────────┐
                                                                            ↓
@@ -236,7 +273,16 @@ Load any `.json` file from this repo via **File → Load** in ComfyUI.
 
 ## API
 
-This node pack uses the **muapi.ai** API under the hood:
+This local version uses BytePlus ModelArk directly:
+
+- **Create task:** `POST https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks`
+- **Poll task:** `GET https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks/{id}`
+- **Auth:** `Authorization: Bearer <ARK_API_KEY>`
+- **Model:** use your BytePlus endpoint ID or model ID in the request `model` field.
+
+The original muapi.ai endpoints listed below are kept only as upstream historical reference.
+
+Upstream originally used these **muapi.ai** endpoints:
 - **T2V:** `POST https://api.muapi.ai/api/v1/seedance-v2.0-t2v`
 - **I2V:** `POST https://api.muapi.ai/api/v1/seedance-v2.0-i2v`
 - **Omni:** `POST https://api.muapi.ai/api/v1/seedance-2.0-omni-reference`
