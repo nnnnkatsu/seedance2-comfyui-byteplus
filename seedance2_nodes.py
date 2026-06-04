@@ -49,6 +49,8 @@ ENDPOINT_ENV_VARS = (
     "ARK_MODEL",
 )
 BASE_URL_ENV_VARS = ("BYTEPLUS_ARK_BASE_URL", "ARK_BASE_URL")
+RESOLUTION_OPTIONS = ["480p", "720p", "1080p"]
+DEFAULT_RESOLUTION = "480p"
 QUALITY_TO_RESOLUTION = {
     "basic": "480p",
     "high": "720p",
@@ -162,9 +164,9 @@ def _normalize_prompt_references(prompt):
     return re.sub(r"@(image|video|audio)([1-9])\b", repl, prompt, flags=re.IGNORECASE)
 
 
-def _quality_to_resolution(quality):
-    value = str(quality or "").strip()
-    return QUALITY_TO_RESOLUTION.get(value, value if value else "720p")
+def _normalize_resolution(resolution):
+    value = str(resolution or "").strip().lower()
+    return QUALITY_TO_RESOLUTION.get(value, value if value else DEFAULT_RESOLUTION)
 
 
 def _image_tensor_to_data_url(image_tensor):
@@ -268,7 +270,7 @@ def _content_audio(url, role="reference_audio"):
     return item
 
 
-def _build_payload(endpoint, prompt, aspect_ratio, quality, duration, generate_audio, content_tail=None):
+def _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, content_tail=None):
     content = []
     if prompt and prompt.strip():
         content.append(_content_text(prompt))
@@ -277,7 +279,7 @@ def _build_payload(endpoint, prompt, aspect_ratio, quality, duration, generate_a
     return {
         "model": _load_endpoint(endpoint),
         "content": content,
-        "resolution": _quality_to_resolution(quality),
+        "resolution": _normalize_resolution(resolution),
         "ratio": aspect_ratio or "adaptive",
         "duration": int(duration),
         "generate_audio": bool(generate_audio),
@@ -411,6 +413,7 @@ class Seedance2TextToVideo:
     Seedance 2.0 Text-to-Video
     ---------------------------
     Generate video purely from a text prompt.
+    Resolutions: 480p | 720p | 1080p
     Aspect ratios: 16:9 | 9:16 | 4:3 | 3:4
     Duration: 5 | 10 | 15 seconds
     """
@@ -420,7 +423,8 @@ class Seedance2TextToVideo:
             "prompt": ("STRING", {"multiline": True,
                 "default": "A cinematic aerial shot of a futuristic city at dusk, volumetric lighting, 4K"}),
             "aspect_ratio": (["16:9", "9:16", "4:3", "3:4"], {"default": "16:9"}),
-            "quality": (["basic", "high"], {"default": "basic"}),
+            "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
+                "tooltip": "BytePlus output resolution. 1080p is not supported by Seedance 2.0 Fast endpoints."}),
             "duration": ([5, 10, 15], {"default": 5}),
         }, "optional": {
             "api_key": ("STRING", {"multiline": False, "default": ""}),
@@ -433,9 +437,9 @@ class Seedance2TextToVideo:
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, prompt, aspect_ratio, quality, duration, api_key="", endpoint="", generate_audio=True):
+    def run(self, prompt, aspect_ratio, resolution, duration, api_key="", endpoint="", generate_audio=True):
         api_key = _load_api_key(api_key)
-        payload = _build_payload(endpoint, prompt, aspect_ratio, quality, duration, generate_audio)
+        payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio)
         print("[Seedance2 T2V] Submitting...")
         rid = _submit(api_key, endpoint, payload)
         result = _poll(api_key, rid)
@@ -459,7 +463,8 @@ class Seedance2ImageToVideo:
             "prompt": ("STRING", {"multiline": True,
                 "default": "The character in @image1 walks through a beautiful garden, cinematic motion"}),
             "aspect_ratio": (["16:9", "9:16", "4:3", "3:4"], {"default": "16:9"}),
-            "quality": (["basic", "high"], {"default": "basic"}),
+            "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
+                "tooltip": "BytePlus output resolution. 1080p is not supported by Seedance 2.0 Fast endpoints."}),
             "duration": ([5, 10, 15], {"default": 5}),
         }, "optional": {
             "api_key": ("STRING", {"multiline": False, "default": ""}),
@@ -475,7 +480,7 @@ class Seedance2ImageToVideo:
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, prompt, aspect_ratio, quality, duration, api_key="", endpoint="", generate_audio=True,
+    def run(self, prompt, aspect_ratio, resolution, duration, api_key="", endpoint="", generate_audio=True,
             image_1=None, image_2=None, image_3=None, image_4=None, image_5=None,
             image_6=None, image_7=None, image_8=None, image_9=None):
         api_key = _load_api_key(api_key)
@@ -488,7 +493,7 @@ class Seedance2ImageToVideo:
                 images_list.append(_upload_image(api_key, img))
         if not images_list: raise ValueError("At least one image required.")
         content_tail = [_content_image(url, "reference_image") for url in images_list]
-        payload = _build_payload(endpoint, prompt, aspect_ratio, quality, duration, generate_audio, content_tail)
+        payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, content_tail)
         print(f"[Seedance2 I2V] Submitting ({len(images_list)} image(s))...")
         rid = _submit(api_key, endpoint, payload)
         result = _poll(api_key, rid)
@@ -511,7 +516,8 @@ class Seedance2Extend:
         return {"required": {
             "request_id": ("STRING", {"multiline": False, "default": "",
                 "tooltip": "request_id from a completed Seedance 2.0 generation"}),
-            "quality": (["basic", "high"], {"default": "basic"}),
+            "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
+                "tooltip": "BytePlus output resolution. 1080p is not supported by Seedance 2.0 Fast endpoints."}),
             "duration": ([5, 10, 15], {"default": 5}),
         }, "optional": {
             "api_key": ("STRING", {"multiline": False, "default": ""}),
@@ -526,7 +532,7 @@ class Seedance2Extend:
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, request_id, quality, duration, api_key="", endpoint="", generate_audio=True, prompt=""):
+    def run(self, request_id, resolution, duration, api_key="", endpoint="", generate_audio=True, prompt=""):
         api_key = _load_api_key(api_key)
         if not request_id.strip(): raise ValueError("request_id required.")
         source = request_id.strip()
@@ -540,7 +546,7 @@ class Seedance2Extend:
             source_url = _output_url(source_result)
         extend_prompt = prompt.strip() or "Continue the reference video naturally."
         content_tail = [_content_video(source_url, "reference_video")]
-        payload = _build_payload(endpoint, extend_prompt, "adaptive", quality, duration, generate_audio, content_tail)
+        payload = _build_payload(endpoint, extend_prompt, "adaptive", resolution, duration, generate_audio, content_tail)
         print(f"[Seedance2 Extend] Submitting extension from {source}...")
         new_id = _submit(api_key, endpoint, payload)
         result = _poll(api_key, new_id)
@@ -612,6 +618,7 @@ class Seedance2Omni:
     Example:
       "A person @image1 walking on the beach at sunset, cinematic lighting"
 
+    Resolutions: 480p | 720p | 1080p
     Aspect ratios: 21:9 | 16:9 | 4:3 | 1:1 | 3:4 | 9:16
     Duration: 4 – 15 seconds
     """
@@ -629,7 +636,8 @@ class Seedance2Omni:
             "prompt": ("STRING", {"multiline": True,
                 "default": "A person @image1 walking on the beach at sunset, cinematic lighting"}),
             "aspect_ratio": (["16:9", "9:16", "4:3", "3:4", "1:1", "21:9"], {"default": "16:9"}),
-            "quality": (["basic", "high"], {"default": "basic"}),
+            "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
+                "tooltip": "BytePlus output resolution. 1080p is not supported by Seedance 2.0 Fast endpoints."}),
             "duration": ("INT", {"default": 5, "min": 4, "max": 15, "step": 1}),
         }, "optional": {
             "api_key":      ("STRING", {"multiline": False, "default": ""}),
@@ -662,7 +670,7 @@ class Seedance2Omni:
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, prompt, aspect_ratio, quality, duration, api_key="", endpoint="", generate_audio=True,
+    def run(self, prompt, aspect_ratio, resolution, duration, api_key="", endpoint="", generate_audio=True,
             character_id="",
             image_1=None, image_2=None, image_3=None, image_4=None, image_5=None,
             image_6=None, image_7=None, image_8=None, image_9=None,
@@ -723,7 +731,7 @@ class Seedance2Omni:
         content_tail.extend(_content_video(url, "reference_video") for url in video_files)
         content_tail.extend(_content_audio(url, "reference_audio") for url in audio_files)
 
-        payload = _build_payload(endpoint, prompt, aspect_ratio, quality, duration, generate_audio, content_tail)
+        payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, content_tail)
 
         print(f"[Seedance2 Omni] PAYLOAD: {payload}")
         print(f"[Seedance2 Omni] Submitting "
@@ -829,7 +837,8 @@ class Seedance2ConsistentVideo:
             "prompt": ("STRING", {"multiline": True,
                 "default": "@image1 walks through a sunlit garden, cinematic motion, 4K"}),
             "aspect_ratio": (["16:9", "9:16", "4:3", "3:4"], {"default": "16:9"}),
-            "quality": (["basic", "high"], {"default": "basic"}),
+            "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
+                "tooltip": "BytePlus output resolution. 1080p is not supported by Seedance 2.0 Fast endpoints."}),
             "duration": ([5, 10, 15], {"default": 5}),
         }, "optional": {
             "api_key":         ("STRING", {"multiline": False, "default": ""}),
@@ -849,7 +858,7 @@ class Seedance2ConsistentVideo:
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, prompt, aspect_ratio, quality, duration, api_key="", endpoint="", generate_audio=True,
+    def run(self, prompt, aspect_ratio, resolution, duration, api_key="", endpoint="", generate_audio=True,
             sheet_image=None, sheet_url="", scene_image_2=None, scene_image_3=None):
         api_key = _load_api_key(api_key)
 
@@ -877,7 +886,7 @@ class Seedance2ConsistentVideo:
             prompt = f"@image1 {prompt.strip()}"
 
         content_tail = [_content_image(url, "reference_image") for url in images_list]
-        payload = _build_payload(endpoint, prompt, aspect_ratio, quality, duration, generate_audio, content_tail)
+        payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, content_tail)
 
         print(f"[Seedance2 ConsistentVideo] Submitting with {len(images_list)} image(s)...")
         rid = _submit(api_key, endpoint, payload)

@@ -131,13 +131,15 @@ Generate a video from a text prompt.
 |-------|--------|---------|
 | `prompt` | Text prompt | Example cinematic prompt |
 | `aspect_ratio` | `16:9`, `9:16`, `4:3`, `3:4` | `16:9` |
-| `quality` | `basic`, `high` | `basic` |
+| `resolution` | `480p`, `720p`, `1080p` | `480p` |
 | `duration` | `5`, `10`, `15` seconds | `5` |
 | `api_key` | Optional if supplied by config/env/file | empty |
 | `endpoint` | Optional if supplied by config/env/file | empty |
 | `generate_audio` | Whether BytePlus should generate audio | `true` |
 
 Outputs: `video_url`, `first_frame`, `request_id`
+
+`resolution` is sent directly to the BytePlus API. The old `quality` widget from earlier versions was only a local compatibility mapping: `basic` meant `480p`, and `high` meant `720p`. BytePlus documents `1080p` for Seedance 2.0, but not for Seedance 2.0 Fast endpoints.
 
 ---
 
