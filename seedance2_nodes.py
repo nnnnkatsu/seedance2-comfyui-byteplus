@@ -6,6 +6,7 @@ Focused nodes for Seedance 2.0 video generation via BytePlus ModelArk.
   Seedance2TextToVideo        - ModelArk video generation task
   Seedance2ImageToVideo       - ModelArk video generation task
   Seedance2Extend             - Re-submit using source video as reference_video
+  Seedance2RetrieveTask       - Retrieve a recent ModelArk task result
   Seedance2Omni               - ModelArk multimodal reference task
   Seedance2Character          - Not supported by direct BytePlus video API
   Seedance2ConsistentVideo    - ModelArk reference_image task
@@ -59,6 +60,9 @@ QUALITY_TO_RESOLUTION = {
 VIDEO_EXTS = (".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v")
 AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus")
 _NONE_CHOICE = "(none)"
+_MANUAL_TASK_CHOICE = "(manual task_id)"
+TASK_HISTORY_PATH = "~/.byteplus/seedance2-comfyui-tasks.json"
+TASK_HISTORY_LIMIT = 50
 
 def _list_input_files(extensions):
     """Return sorted list of files in ComfyUI/input/ matching the given extensions."""
@@ -73,6 +77,84 @@ def _list_input_files(extensions):
         return [_NONE_CHOICE] + sorted(files)
     except Exception:
         return [_NONE_CHOICE]
+
+
+def _task_history_path():
+    return os.path.expanduser(TASK_HISTORY_PATH)
+
+
+def _load_task_history():
+    path = _task_history_path()
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        print(f"[Seedance2] Failed to read task history: {e}")
+        return []
+
+
+def _save_task_history(history):
+    try:
+        path = _task_history_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(history[:TASK_HISTORY_LIMIT], f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[Seedance2] Failed to write task history: {e}")
+
+
+def _record_task(task_id, payload_or_result):
+    if not task_id:
+        return
+    data = payload_or_result if isinstance(payload_or_result, dict) else {}
+    record = {
+        "id": task_id,
+        "recorded_at": int(time.time()),
+        "model": str(data.get("model", "")),
+        "status": str(data.get("status", "")),
+        "resolution": str(data.get("resolution", "")),
+        "ratio": str(data.get("ratio", "")),
+        "duration": data.get("duration", ""),
+        "generate_audio": data.get("generate_audio", ""),
+    }
+    history = [item for item in _load_task_history() if item.get("id") != task_id]
+    history.insert(0, record)
+    _save_task_history(history)
+
+
+def _recent_task_choices():
+    choices = [_MANUAL_TASK_CHOICE]
+    for item in _load_task_history():
+        task_id = str(item.get("id", "")).strip()
+        if not task_id:
+            continue
+        timestamp = item.get("recorded_at") or 0
+        try:
+            created = time.strftime("%Y-%m-%d %H:%M", time.localtime(int(timestamp)))
+        except Exception:
+            created = "unknown time"
+        details = " ".join(
+            str(value) for value in (
+                item.get("status", ""),
+                item.get("resolution", ""),
+                item.get("ratio", ""),
+                f"{item.get('duration')}s" if item.get("duration") else "",
+            ) if value
+        )
+        choices.append(f"{task_id} | {created} | {details}".strip())
+    return choices
+
+
+def _task_id_from_choice(choice):
+    match = re.search(r"\bcgt-[^\s|]+", str(choice or ""))
+    return match.group(0) if match else ""
+
+
+def _blank_image():
+    return torch.zeros(1, 64, 64, 3)
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -301,6 +383,7 @@ def _submit(api_key, endpoint, payload):
     task_id = data.get("id") or data.get("task_id") or data.get("request_id")
     if not task_id:
         raise RuntimeError(f"No task id in response: {data}")
+    _record_task(task_id, payload)
     return task_id
 
 
@@ -595,6 +678,57 @@ class Seedance2BytePlusConfig:
 
     def run(self, api_key, endpoint):
         return (_load_api_key(api_key), _load_endpoint(endpoint))
+
+
+class Seedance2RetrieveTask:
+    """
+    Retrieve a historical BytePlus video generation task result.
+
+    Use the request_id returned by any generation node. BytePlus retains task
+    status and output video URLs for about 24 hours, so save the video locally
+    if you need to keep it.
+    """
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "task_id": ("STRING", {"multiline": False, "default": "",
+                "tooltip": "Historical BytePlus video generation task ID, for example cgt-..."}),
+        }, "optional": {
+            "api_key": ("STRING", {"multiline": False, "default": ""}),
+            "recent_task": (_recent_task_choices(), {"default": _MANUAL_TASK_CHOICE,
+                "tooltip": "Recent task IDs created by this node pack on this machine. Leave task_id blank to use this selection."}),
+            "wait_for_completion": ("BOOLEAN", {"default": False,
+                "tooltip": "Poll until the task succeeds, fails, expires, or times out."}),
+            "download_first_frame": ("BOOLEAN", {"default": True,
+                "tooltip": "Download the generated video URL and decode its first frame for preview."}),
+        }}
+    RETURN_TYPES = ("STRING", "IMAGE", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "first_frame", "request_id", "status", "task_json")
+    FUNCTION = "run"
+    CATEGORY = "🌱 Seedance 2.0"
+
+    def run(self, task_id, api_key="", recent_task=_MANUAL_TASK_CHOICE,
+            wait_for_completion=False, download_first_frame=True):
+        api_key = _load_api_key(api_key)
+        resolved_id = task_id.strip() or _task_id_from_choice(recent_task)
+        if not resolved_id:
+            raise ValueError("task_id is required. Paste a cgt-... ID or select a recent task.")
+
+        print(f"[Seedance2 RetrieveTask] Retrieving {resolved_id}...")
+        result = _poll(api_key, resolved_id) if wait_for_completion else _retrieve_task(api_key, resolved_id)
+        status = str(result.get("status", ""))
+        _record_task(resolved_id, result)
+
+        video_url = ""
+        if status == "succeeded":
+            try:
+                video_url = _output_url(result)
+            except Exception as e:
+                print(f"[Seedance2 RetrieveTask] No video URL found: {e}")
+
+        first_frame = _first_frame(video_url) if (download_first_frame and video_url) else _blank_image()
+        task_json = json.dumps(result, ensure_ascii=False, indent=2)
+        return (video_url, first_frame, resolved_id, status, task_json)
 
 
 class Seedance2Omni:
@@ -899,6 +1033,7 @@ class Seedance2ConsistentVideo:
 NODE_CLASS_MAPPINGS = {
     "Seedance2ApiKey":            Seedance2ApiKey,
     "Seedance2BytePlusConfig":    Seedance2BytePlusConfig,
+    "Seedance2RetrieveTask":      Seedance2RetrieveTask,
     "Seedance2TextToVideo":       Seedance2TextToVideo,
     "Seedance2ImageToVideo":      Seedance2ImageToVideo,
     "Seedance2Extend":            Seedance2Extend,
@@ -910,6 +1045,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "Seedance2ApiKey":            "🔑 Seedance 2.0 API Key",
     "Seedance2BytePlusConfig":    "🌱 Seedance2BytePlusConfig",  
+    "Seedance2RetrieveTask":      "🌱 Seedance 2.0 Retrieve Task Result",
     "Seedance2TextToVideo":       "🌱 Seedance 2.0 Text-to-Video",
     "Seedance2ImageToVideo":      "🌱 Seedance 2.0 Image-to-Video",
     "Seedance2Extend":            "🌱 Seedance 2.0 Extend",

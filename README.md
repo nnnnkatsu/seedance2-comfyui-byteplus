@@ -28,6 +28,8 @@ The original project is [Anil-matcha/seedance2-comfyui](https://github.com/Anil-
 | `Seedance 2.0 Omni Reference` | Generate video using text plus image, video, and audio references. |
 | `Seedance 2.0 Consistent Character Video` | Generate a reference-image-guided video using `sheet_image` or `sheet_url`. |
 | `Seedance 2.0 Extend` | Continue from a completed BytePlus task ID, public video URL, or `asset://...` video reference. |
+| `Seedance 2.0 Retrieve Task Result` | Retrieve a recent BytePlus task by `cgt-...` ID and output its `video_url`, first frame, status, and JSON. |
+| `Seedance 2.0 Preview Video URL` | Download a generated video URL to ComfyUI output and show an mp4 player preview. |
 | `Seedance 2.0 Save Video` | Download a generated video URL to disk and return ComfyUI IMAGE frames. |
 | `Seedance 2.0 Consistent Character` | Deprecated for this BytePlus direct fork. The original node was a muapi-only character-sheet helper. |
 
@@ -205,6 +207,42 @@ The node retrieves the source task if needed, then submits a new task using the 
 
 ---
 
+### Seedance 2.0 Retrieve Task Result
+
+Retrieve a historical BytePlus video generation task by `task_id`.
+
+Use this when you want to reuse a generated video as new reference material:
+
+```text
+Retrieve Task Result video_url -> Omni Reference video_url_1
+Retrieve Task Result video_url -> Save Video video_url
+Retrieve Task Result video_url -> Preview Video URL video_url
+Retrieve Task Result first_frame -> Preview Image
+```
+
+Inputs:
+
+- `task_id`: a `cgt-...` request ID returned by a generation node.
+- `recent_task`: optional local dropdown of recent task IDs created by this node pack on this machine.
+- `wait_for_completion`: poll until the task finishes instead of reading the current status once.
+- `download_first_frame`: decode the first frame for ComfyUI preview.
+
+Outputs: `video_url`, `first_frame`, `request_id`, `status`, `task_json`
+
+BytePlus only retains generated task data and output video URLs for about 24 hours, so save videos locally if you need to keep them.
+
+---
+
+### Seedance 2.0 Preview Video URL
+
+Download a `video_url` to ComfyUI's output folder and display it with ComfyUI's mp4 preview UI.
+
+This is lighter than `Seedance 2.0 Save Video` because it does not decode all frames into an IMAGE batch. Use it when you only want playback preview.
+
+Outputs: `filepath`
+
+---
+
 ### Seedance 2.0 Consistent Character
 
 This node is kept only so old workflows fail with a clear message.
@@ -238,6 +276,7 @@ This fork uses BytePlus ModelArk directly:
 |--------|----------|
 | Create task | `POST https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks` |
 | Poll task | `GET https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks/{id}` |
+| Retrieve task | `GET https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks/{id}` |
 
 Authentication:
 
@@ -257,7 +296,7 @@ Important naming note:
 
 - `Seedance2Character` is not implemented for direct BytePlus API usage.
 - Local video reference upload is not supported by this direct generation path.
-- Signed BytePlus output URLs can expire; save generated videos locally if you need to keep them.
+- BytePlus task data and signed output URLs expire; save generated videos locally if you need to keep them.
 - The old muapi CLI config `~/.muapi/config.json` is not used by this fork.
 
 ---

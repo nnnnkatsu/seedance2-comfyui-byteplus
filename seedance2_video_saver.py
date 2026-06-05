@@ -84,5 +84,55 @@ class Seedance2VideoSaver:
         return {"ui": {"text": [msg]}, "result": (__import__("torch").zeros(1, 64, 64, 3), "ERROR", 0)}
 
 
-NODE_CLASS_MAPPINGS = {"Seedance2VideoSaver": Seedance2VideoSaver}
-NODE_DISPLAY_NAME_MAPPINGS = {"Seedance2VideoSaver": "🌱 Seedance 2.0 Save Video"}
+class Seedance2VideoPreview:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "video_url": ("STRING", {"multiline": False, "default": ""}),
+            "save_subfolder": ("STRING", {"default": "seedance2_preview"}),
+            "filename_prefix": ("STRING", {"default": "seedance2_preview"}),
+        }}
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("filepath",)
+    FUNCTION = "run"
+    CATEGORY = "🌱 Seedance 2.0"
+    OUTPUT_NODE = True
+
+    def run(self, video_url, save_subfolder, filename_prefix):
+        if not video_url or not video_url.strip().startswith("http"):
+            return self._err("Invalid URL")
+        out_dir = os.path.join(folder_paths.get_output_directory(), save_subfolder)
+        os.makedirs(out_dir, exist_ok=True)
+        n = 1
+        fp = os.path.join(out_dir, f"{filename_prefix}_{n:05d}.mp4")
+        while os.path.exists(fp):
+            n += 1
+            fp = os.path.join(out_dir, f"{filename_prefix}_{n:05d}.mp4")
+        try:
+            print(f"[Seedance2 Preview] Downloading {video_url[:80]}...")
+            r = requests.get(video_url, stream=True, timeout=300)
+            r.raise_for_status()
+            with open(fp, "wb") as fh:
+                for chunk in r.iter_content(8192):
+                    if chunk:
+                        fh.write(chunk)
+            fname = os.path.basename(fp)
+            preview = {"filename": fname, "subfolder": save_subfolder, "type": "output", "format": "video/mp4"}
+            print(f"[Seedance2 Preview] Saved {fname}")
+            return {"ui": {"gifs": [preview]}, "result": (fp,)}
+        except Exception as e:
+            return self._err(str(e))
+
+    def _err(self, msg):
+        print(f"[Seedance2 Preview] ERROR: {msg}")
+        return {"ui": {"text": [msg]}, "result": ("ERROR",)}
+
+
+NODE_CLASS_MAPPINGS = {
+    "Seedance2VideoSaver": Seedance2VideoSaver,
+    "Seedance2VideoPreview": Seedance2VideoPreview,
+}
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "Seedance2VideoSaver": "🌱 Seedance 2.0 Save Video",
+    "Seedance2VideoPreview": "🌱 Seedance 2.0 Preview Video URL",
+}
