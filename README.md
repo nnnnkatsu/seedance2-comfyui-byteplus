@@ -2,11 +2,10 @@
 
 Languages: [English](README.md) | [中文](README.zh-CN.md) | [日本語](README.ja-JP.md)
 
-> **⚠️ BytePlus Direct API Version** — This is a custom fork with direct BytePlus API integration. If you're using the original muapi.ai service, please use [Anil-matcha/seedance2-comfyui](https://github.com/nnnnkatsu/seedance2-comfyui-byteplus) instead.
+> **⚠️ BytePlus Direct API + AWS S3 Version** — This is a custom fork of [Anil-matcha/seedance2-comfyui](https://github.com/Anil-matcha/seedance2-comfyui). It replaces the original muapi.ai integration with direct BytePlus ModelArk API calls and adds AWS S3 helper nodes for private reference-video workflows.
 
 > **ComfyUI custom nodes for Seedance 2.0** — the state-of-the-art video generation model by ByteDance.
-> Generate stunning AI videos directly inside ComfyUI using the [muapi.ai](https://muapi.ai) API.
-> If you wish to check the api documentation check this [Seedance 2.0 api](https://github.com/Anil-matcha/Seedance-2.0-API)
+> Generate AI videos directly inside ComfyUI using BytePlus ModelArk's official video generation API.
 
 This fork changes the original muapi.ai-based node pack to call BytePlus directly:
 
@@ -14,6 +13,7 @@ This fork changes the original muapi.ai-based node pack to call BytePlus directl
 - Creates video tasks with `POST /api/v3/contents/generations/tasks`.
 - Polls task status with `GET /api/v3/contents/generations/tasks/{id}`.
 - Uses a visible `endpoint` field in ComfyUI for your BytePlus `ep-...` endpoint ID.
+- Adds AWS S3 upload, browse, preview, and cleanup helper nodes for private local reference videos.
 
 The original project is [Anil-matcha/seedance2-comfyui](https://github.com/Anil-matcha/seedance2-comfyui).
 
