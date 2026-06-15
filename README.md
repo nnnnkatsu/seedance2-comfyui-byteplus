@@ -1,5 +1,7 @@
 # Seedance 2.0 ComfyUI Nodes for BytePlus ModelArk
 
+Languages: [English](README.md) | [中文](README.zh-CN.md) | [日本語](README.ja-JP.md)
+
 > **⚠️ BytePlus Direct API Version** — This is a custom fork with direct BytePlus API integration. If you're using the original muapi.ai service, please use [Anil-matcha/seedance2-comfyui](https://github.com/nnnnkatsu/seedance2-comfyui-byteplus) instead.
 
 > **ComfyUI custom nodes for Seedance 2.0** — the state-of-the-art video generation model by ByteDance.
@@ -31,6 +33,10 @@ The original project is [Anil-matcha/seedance2-comfyui](https://github.com/Anil-
 | `Seedance 2.0 Retrieve Task Result` | Retrieve a recent BytePlus task by `cgt-...` ID and output its `video_url`, first frame, status, and JSON. |
 | `Seedance 2.0 Preview Video URL` | Download a generated video URL to ComfyUI output and show an mp4 player preview. |
 | `Seedance 2.0 Save Video` | Download a generated video URL to disk and return ComfyUI IMAGE frames. |
+| `Seedance 2.0 S3 Config` | Store AWS S3 access settings once and wire them to S3 helper nodes. |
+| `Seedance 2.0 S3 Upload Reference Video` | Upload a local reference video, including ComfyUI `Load Video` output, to S3 and output a short-lived pre-signed URL. |
+| `Seedance 2.0 S3 Browse Reference Videos` | List S3 reference videos, show mp4 previews, and output the selected pre-signed URL. |
+| `Seedance 2.0 S3 Delete Reference Video` | Advanced/manual cleanup node for deleting a known S3 reference object. Normal workflows can delete from `Omni Reference`. |
 | `Seedance 2.0 Consistent Character` | Deprecated for this BytePlus direct fork. The original node was a muapi-only character-sheet helper. |
 
 ---
@@ -47,7 +53,7 @@ The original project is [Anil-matcha/seedance2-comfyui](https://github.com/Anil-
 ```bash
 cd ComfyUI/custom_nodes
 git clone https://github.com/nnnnkatsu/seedance2-comfyui-byteplus
-pip install -r seedance2-comfyui/requirements.txt
+pip install -r seedance2-comfyui-byteplus/requirements.txt
 ```
 
 ---
@@ -174,9 +180,81 @@ Supported prompt references:
 Reference handling:
 
 - ComfyUI image tensors are sent as base64 image data URLs.
-- Local audio files are sent as base64 audio data URLs.
-- Reference videos must be public `https://...` URLs, `asset://...` IDs, or existing data URLs.
-- Local video files are not uploaded by this direct BytePlus API path.
+- Local audio files are sent as base64 `data:audio/...` URLs.
+- `audio_file_1` ... `audio_file_3` accept local `mp3`/`wav` files from ComfyUI input.
+- `audio_url_1` ... `audio_url_3` accept public `https://...` URLs, `asset://...` IDs, existing `data:audio/...` URLs, or absolute local `mp3`/`wav` paths.
+- BytePlus audio reference limits: 2-15 seconds per clip, up to 3 clips, total audio duration <= 15 seconds, each audio file <= 15 MB. Avoid Base64 for large files.
+- Reference videos must be public `https://...` URLs, S3 pre-signed URLs, or `asset://...` IDs.
+- Local video files are not sent directly to BytePlus. Use the S3 helper nodes to upload local videos and pass a pre-signed URL.
+
+---
+
+### S3 Reference Video Workflow
+
+Use this when your reference video cannot be published as a normal public URL.
+
+New local reference video:
+
+```text
+S3 Config s3_config_json -> S3 Upload Reference Video s3_config_json
+Load Video video -> S3 Upload Reference Video video
+S3 Upload Reference Video video_url -> Omni Reference video_url_1
+S3 Upload Reference Video s3_reference_json -> Omni Reference s3_reference_json_1
+S3 Config s3_config_json -> Omni Reference s3_config_json
+Omni Reference delete_s3_references_after_generation = true
+```
+
+The upload node stores the video in S3 and returns a pre-signed `video_url`, usually valid for 5 minutes. You can feed it a ComfyUI `Load Video` output through the optional `video` input; when the source is a loaded file, the node uploads the original video file instead of decoded frames. The `local_video_file` and `local_video_path` widgets remain as fallbacks.
+
+`S3 Upload Reference Video` has two outputs:
+
+- `video_url`: connect this to `Omni Reference video_url_1`, `video_url_2`, or `video_url_3`.
+- `s3_reference_json`: optional metadata for `Omni Reference` cleanup. Connect it only when you want Omni to delete the uploaded object after generation.
+
+If `delete_s3_references_after_generation` is enabled on `Omni Reference`, Omni deletes the connected S3 reference objects after the BytePlus generation succeeds. If generation fails before completion, deletion is not attempted, so your S3 lifecycle rule is still the fallback cleanup.
+
+`S3 Delete Reference Video` remains available for manual cleanup, but it is no longer needed in the normal Upload -> Omni workflow.
+
+Reuse a reference video already in S3:
+
+```text
+S3 Browse Reference Videos video_url -> Omni Reference video_url_1
+```
+
+`S3 Browse Reference Videos` lists recent objects under the configured prefix. It previews only the current `selected_index` item and outputs a newly signed URL for that same item. To choose another reference, change `selected_index` and run the node again.
+
+S3 location settings:
+
+- S3 itself requires both `region` and `bucket`, but the upload/browse/delete nodes do not need those fields repeated.
+- Recommended: connect `S3 Config` once. It outputs one `s3_config_json`, which carries AWS access key, secret key, `region`, `bucket`, and `prefix` to the S3 helper nodes.
+- The `prefix` widget on upload/browse nodes is only an override. Leave it blank to use the prefix from `S3 Config`, environment variables, local JSON config, or the built-in `video-refs` default.
+- For shared workstations where users should not edit bucket settings, create `~/.byteplus/seedance2-s3.json` on the ComfyUI machine:
+
+```json
+{
+  "aws_access_key_id": "your_s3_access_key_id",
+  "aws_secret_access_key": "your_s3_secret_access_key",
+  "region": "ap-northeast-1",
+  "bucket": "your-private-reference-video-bucket",
+  "prefix": "video-refs"
+}
+```
+
+- Environment variables are also supported: `SEEDANCE2_S3_REGION`, `SEEDANCE2_S3_BUCKET`, and `SEEDANCE2_S3_PREFIX`.
+- AWS credential environment variables are also supported: `SEEDANCE2_S3_ACCESS_KEY_ID`, `SEEDANCE2_S3_SECRET_ACCESS_KEY`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY`.
+
+IAM permissions:
+
+- Upload needs `s3:PutObject` on the target bucket/prefix.
+- Browse and preview need `s3:ListBucket` and `s3:GetObject`.
+- Delete needs `s3:DeleteObject`.
+- If you get `AccessDenied` during upload, check whether the IAM policy only allows a narrower prefix. The node uploads under the configured `prefix`; that prefix must match the allowed S3 resource path.
+
+Security notes:
+
+- Pre-signed URLs are time-limited but can be used by anyone who has the full URL until they expire.
+- AWS keys entered into ComfyUI node widgets can be stored in saved workflows. Use a limited IAM user scoped to the reference-video bucket/prefix.
+- `expires_in=300` is the default. Increase it if BytePlus queueing causes the URL to expire before the generation service fetches the reference video.
 
 ---
 
@@ -295,7 +373,7 @@ Important naming note:
 ## Limitations
 
 - `Seedance2Character` is not implemented for direct BytePlus API usage.
-- Local video reference upload is not supported by this direct generation path.
+- Local video reference upload is supported through the S3 helper nodes. The generation API still receives a URL, not local file bytes.
 - BytePlus task data and signed output URLs expire; save generated videos locally if you need to keep them.
 - The old muapi CLI config `~/.muapi/config.json` is not used by this fork.
 
@@ -309,6 +387,7 @@ Important naming note:
 - `numpy` >= 1.23
 - `torch` >= 2.0
 - `opencv-python` >= 4.7
+- `boto3` >= 1.34, only required for S3 helper nodes
 
 ---
 

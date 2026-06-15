@@ -58,7 +58,7 @@ QUALITY_TO_RESOLUTION = {
 }
 
 VIDEO_EXTS = (".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v")
-AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus")
+AUDIO_EXTS = (".mp3", ".wav")
 _NONE_CHOICE = "(none)"
 _MANUAL_TASK_CHOICE = "(manual task_id)"
 TASK_HISTORY_PATH = "~/.byteplus/seedance2-comfyui-tasks.json"
@@ -123,6 +123,77 @@ def _record_task(task_id, payload_or_result):
     history = [item for item in _load_task_history() if item.get("id") != task_id]
     history.insert(0, record)
     _save_task_history(history)
+
+
+def _parse_json_object(value, label):
+    if not value or not str(value).strip():
+        return {}
+    try:
+        data = json.loads(str(value))
+    except Exception as e:
+        raise ValueError(f"Invalid {label}: {e}") from e
+    if not isinstance(data, dict):
+        raise ValueError(f"{label} must be a JSON object.")
+    return data
+
+
+def _delete_s3_references(s3_config_json, reference_jsons, delete_enabled):
+    if not delete_enabled:
+        return
+
+    cfg = _parse_json_object(s3_config_json, "s3_config_json")
+    refs = [
+        _parse_json_object(value, f"s3_reference_json_{index}")
+        for index, value in enumerate(reference_jsons, 1)
+        if value and str(value).strip()
+    ]
+    refs = [ref for ref in refs if ref.get("key")]
+    if not refs:
+        print("[Seedance2 Omni] S3 delete requested, but no s3_reference_json inputs were provided.")
+        return
+
+    try:
+        import boto3
+    except ImportError as e:
+        raise RuntimeError(
+            "boto3 is required to delete S3 reference videos after generation. "
+            "Install project requirements in the ComfyUI Python environment."
+        ) from e
+
+    access_key = (
+        cfg.get("aws_access_key_id")
+        or cfg.get("access_key_id")
+        or os.environ.get("SEEDANCE2_S3_ACCESS_KEY_ID")
+        or os.environ.get("AWS_ACCESS_KEY_ID")
+        or ""
+    )
+    secret_key = (
+        cfg.get("aws_secret_access_key")
+        or cfg.get("secret_access_key")
+        or os.environ.get("SEEDANCE2_S3_SECRET_ACCESS_KEY")
+        or os.environ.get("AWS_SECRET_ACCESS_KEY")
+        or ""
+    )
+
+    for ref in refs:
+        region = str(ref.get("region") or cfg.get("region") or os.environ.get("SEEDANCE2_S3_REGION")
+                     or os.environ.get("AWS_DEFAULT_REGION") or "ap-northeast-1").strip()
+        bucket = str(ref.get("bucket") or cfg.get("bucket") or os.environ.get("SEEDANCE2_S3_BUCKET") or "").strip()
+        key = str(ref.get("key") or "").strip()
+        if not bucket or not key:
+            print("[Seedance2 Omni] Skipping S3 delete because bucket or key is missing.")
+            continue
+
+        client_args = {"region_name": region}
+        if access_key or secret_key:
+            client_args["aws_access_key_id"] = str(access_key).strip()
+            client_args["aws_secret_access_key"] = str(secret_key).strip()
+        s3 = boto3.client("s3", **client_args)
+        try:
+            s3.delete_object(Bucket=bucket, Key=key)
+            print(f"[Seedance2 Omni] Deleted S3 reference s3://{bucket}/{key}")
+        except Exception as e:
+            print(f"[Seedance2 Omni] Failed to delete S3 reference s3://{bucket}/{key}: {e}")
 
 
 def _recent_task_choices():
@@ -304,8 +375,18 @@ def _resolve_media_ref(api_key, ref, kind):
     if not ref or not ref.strip():
         return None
     ref = ref.strip().strip('"').strip("'")
-    if ref.lower().startswith(("http://", "https://", "asset://", "data:")):
-        return ref
+    lower_ref = ref.lower()
+    if kind == "video":
+        if lower_ref.startswith(("http://", "https://", "asset://")):
+            return ref
+        if lower_ref.startswith("data:"):
+            raise RuntimeError(
+                "[Seedance2 Omni] BytePlus reference videos must be public URLs, "
+                "S3 pre-signed URLs, or asset:// IDs. data:video inputs are not supported."
+            )
+    elif kind == "audio":
+        if lower_ref.startswith(("http://", "https://", "asset://", "data:audio/")):
+            return ref
     path = _path_from_input(ref)
     if not path:
         raise RuntimeError(
@@ -319,6 +400,10 @@ def _resolve_media_ref(api_key, ref, kind):
             "to a usable generation URL."
         )
     if kind == "audio":
+        if not path.lower().endswith(AUDIO_EXTS):
+            raise RuntimeError(
+                "[Seedance2 Omni] BytePlus reference audio supports only mp3 or wav files."
+            )
         return _file_to_data_url(path, "audio/mpeg")
     raise RuntimeError(f"Unsupported media kind: {kind}")
 
@@ -740,14 +825,12 @@ class Seedance2Omni:
 
     Reference media in the prompt using:
       @image1 … @image9   — uploaded image tensors
-      @video1 … @video3   — video clip (local file path OR http/https URL)
-      @audio1 … @audio3   — audio clip (local file path OR http/https URL)
+      @video1 … @video3   — video URL, S3 pre-signed URL, or asset:// ID
+      @audio1 … @audio3   — audio URL, asset:// ID, data URL, or local audio file
 
-    The video_* / audio_* fields accept any of:
-      - an absolute path to a local file (e.g. D:\\clips\\a.mp4)
-      - a filename inside ComfyUI/input/ (e.g. my_clip.mp4)
-      - an http(s) URL (passed through unchanged)
-    Local files are auto-uploaded to the API before submission.
+    BytePlus does not accept local video files in this request. Upload private
+    videos through the S3 helper nodes and pass the generated video_url.
+    Local audio files in ComfyUI/input/ are encoded as data:audio URLs.
 
     Example:
       "A person @image1 walking on the beach at sunset, cinematic lighting"
@@ -758,14 +841,13 @@ class Seedance2Omni:
     """
     @classmethod
     def INPUT_TYPES(cls):
-        video_files = _list_input_files(VIDEO_EXTS)
         audio_files = _list_input_files(AUDIO_EXTS)
-        video_tip = ("Pick a video file from ComfyUI/input/. "
-                     "Leave as (none) to use the URL/path override field instead.")
-        audio_tip = ("Pick an audio file from ComfyUI/input/. "
-                     "Leave as (none) to use the URL/path override field instead.")
-        override_tip = ("Optional override: http(s) URL or absolute local path. "
-                        "Used only if the dropdown above is (none).")
+        video_url_tip = ("Reference video URL. Use a public http(s) URL, S3 pre-signed URL, "
+                         "or asset:// ID. Local video files must be uploaded with the S3 helper nodes first.")
+        audio_tip = ("Pick an mp3 or wav file from ComfyUI/input/. BytePlus audio refs: "
+                     "2-15s each, max 3 clips, total <=15s, each file <=15 MB.")
+        audio_url_tip = ("Reference audio. Use a public http(s) URL, asset:// ID, data:audio URL, "
+                         "or an absolute local mp3/wav path that will be encoded as Base64.")
         return {"required": {
             "prompt": ("STRING", {"multiline": True,
                 "default": "A person @image1 walking on the beach at sunset, cinematic lighting"}),
@@ -784,20 +866,27 @@ class Seedance2Omni:
             "image_1": ("IMAGE",), "image_2": ("IMAGE",), "image_3": ("IMAGE",),
             "image_4": ("IMAGE",), "image_5": ("IMAGE",), "image_6": ("IMAGE",),
             "image_7": ("IMAGE",), "image_8": ("IMAGE",), "image_9": ("IMAGE",),
-            # Reference videos (@video1 … @video3): dropdown + override string
-            "video_file_1": (video_files, {"default": _NONE_CHOICE, "tooltip": video_tip}),
-            "video_url_1":  ("STRING", {"multiline": False, "default": "", "tooltip": override_tip}),
-            "video_file_2": (video_files, {"default": _NONE_CHOICE, "tooltip": video_tip}),
-            "video_url_2":  ("STRING", {"multiline": False, "default": "", "tooltip": override_tip}),
-            "video_file_3": (video_files, {"default": _NONE_CHOICE, "tooltip": video_tip}),
-            "video_url_3":  ("STRING", {"multiline": False, "default": "", "tooltip": override_tip}),
+            # Reference videos (@video1 … @video3): URL only
+            "video_url_1":  ("STRING", {"multiline": False, "default": "", "tooltip": video_url_tip}),
+            "video_url_2":  ("STRING", {"multiline": False, "default": "", "tooltip": video_url_tip}),
+            "video_url_3":  ("STRING", {"multiline": False, "default": "", "tooltip": video_url_tip}),
+            "s3_config_json": ("STRING", {"forceInput": True,
+                "tooltip": "Connect S3 Config here when deleting uploaded S3 reference videos after generation."}),
+            "s3_reference_json_1": ("STRING", {"forceInput": True,
+                "tooltip": "Optional metadata from S3 Upload/Browse Reference Video for video_url_1 cleanup."}),
+            "s3_reference_json_2": ("STRING", {"forceInput": True,
+                "tooltip": "Optional metadata from S3 Upload/Browse Reference Video for video_url_2 cleanup."}),
+            "s3_reference_json_3": ("STRING", {"forceInput": True,
+                "tooltip": "Optional metadata from S3 Upload/Browse Reference Video for video_url_3 cleanup."}),
+            "delete_s3_references_after_generation": ("BOOLEAN", {"default": False,
+                "tooltip": "Delete connected S3 reference videos after this Omni generation succeeds."}),
             # Reference audio (@audio1 … @audio3): dropdown + override string
             "audio_file_1": (audio_files, {"default": _NONE_CHOICE, "tooltip": audio_tip}),
-            "audio_url_1":  ("STRING", {"multiline": False, "default": "", "tooltip": override_tip}),
+            "audio_url_1":  ("STRING", {"multiline": False, "default": "", "tooltip": audio_url_tip}),
             "audio_file_2": (audio_files, {"default": _NONE_CHOICE, "tooltip": audio_tip}),
-            "audio_url_2":  ("STRING", {"multiline": False, "default": "", "tooltip": override_tip}),
+            "audio_url_2":  ("STRING", {"multiline": False, "default": "", "tooltip": audio_url_tip}),
             "audio_file_3": (audio_files, {"default": _NONE_CHOICE, "tooltip": audio_tip}),
-            "audio_url_3":  ("STRING", {"multiline": False, "default": "", "tooltip": override_tip}),
+            "audio_url_3":  ("STRING", {"multiline": False, "default": "", "tooltip": audio_url_tip}),
         }}
     RETURN_TYPES = ("STRING", "IMAGE", "STRING")
     RETURN_NAMES = ("video_url", "first_frame", "request_id")
@@ -811,6 +900,8 @@ class Seedance2Omni:
             video_file_1=_NONE_CHOICE, video_url_1="",
             video_file_2=_NONE_CHOICE, video_url_2="",
             video_file_3=_NONE_CHOICE, video_url_3="",
+            s3_config_json="", s3_reference_json_1="", s3_reference_json_2="", s3_reference_json_3="",
+            delete_s3_references_after_generation=False,
             audio_file_1=_NONE_CHOICE, audio_url_1="",
             audio_file_2=_NONE_CHOICE, audio_url_2="",
             audio_file_3=_NONE_CHOICE, audio_url_3=""):
@@ -825,16 +916,25 @@ class Seedance2Omni:
                 print(f"[Seedance2 Omni] Encoding image {i}...")
                 images_list.append(_upload_image(api_key, img))
 
-        # For each slot, prefer the dropdown selection; fall back to the URL/path override.
+        # Legacy workflows may still contain removed local video widgets.
+        legacy_video_files = [video_file_1, video_file_2, video_file_3]
+        if any(v and v != _NONE_CHOICE for v in legacy_video_files):
+            raise RuntimeError(
+                "[Seedance2 Omni] Local video_file inputs were removed because BytePlus "
+                "requires reference videos to be URLs or asset:// IDs. Upload local videos "
+                "with S3 Upload Reference Video, then connect its video_url to Omni."
+            )
+
+        # For audio slots, prefer the dropdown selection; fall back to the URL/path override.
         def _pick(dropdown, url):
             if dropdown and dropdown != _NONE_CHOICE:
                 return dropdown  # filename inside ComfyUI/input/ — _resolve_media_ref handles it
             return url
 
         video_refs = [
-            _pick(video_file_1, video_url_1),
-            _pick(video_file_2, video_url_2),
-            _pick(video_file_3, video_url_3),
+            video_url_1,
+            video_url_2,
+            video_url_3,
         ]
         audio_refs = [
             _pick(audio_file_1, audio_url_1),
@@ -874,6 +974,11 @@ class Seedance2Omni:
         result = _poll(api_key, rid)
         url = _output_url(result)
         print(f"[Seedance2 Omni] Done → {url}")
+        _delete_s3_references(
+            s3_config_json,
+            [s3_reference_json_1, s3_reference_json_2, s3_reference_json_3],
+            delete_s3_references_after_generation,
+        )
         return (url, _first_frame(url), rid)
 
 

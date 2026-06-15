@@ -14,6 +14,17 @@ except ImportError:
             return os.path.join(os.path.expanduser("~"), "comfyui_output")
 
 
+def _video_preview_ui(filename, subfolder, folder_type="output"):
+    return {
+        "images": [{
+            "filename": filename,
+            "subfolder": subfolder,
+            "type": folder_type,
+        }],
+        "animated": (True,),
+    }
+
+
 class Seedance2VideoSaver:
     @classmethod
     def INPUT_TYPES(cls):
@@ -52,9 +63,8 @@ class Seedance2VideoSaver:
                     if chunk: fh.write(chunk)
             frames, count = self._load(fp, frame_load_cap, skip_first_frames, select_every_nth)
             fname = os.path.basename(fp)
-            preview = {"filename": fname, "subfolder": save_subfolder, "type": "output", "format": "video/mp4"}
             print(f"[Seedance2 Saver] Saved {fname} — {count} frames")
-            return {"ui": {"gifs": [preview]}, "result": (frames, fp, count)}
+            return {"ui": _video_preview_ui(fname, save_subfolder), "result": (frames, fp, count)}
         except Exception as e:
             return self._err(str(e))
 
@@ -117,9 +127,8 @@ class Seedance2VideoPreview:
                     if chunk:
                         fh.write(chunk)
             fname = os.path.basename(fp)
-            preview = {"filename": fname, "subfolder": save_subfolder, "type": "output", "format": "video/mp4"}
             print(f"[Seedance2 Preview] Saved {fname}")
-            return {"ui": {"gifs": [preview]}, "result": (fp,)}
+            return {"ui": _video_preview_ui(fname, save_subfolder), "result": (fp,)}
         except Exception as e:
             return self._err(str(e))
 
