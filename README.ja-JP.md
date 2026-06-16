@@ -70,8 +70,7 @@ pip install -r seedance2-comfyui-byteplus/requirements.txt
 | `Seedance 2.0 Save Video` | `video_url` をローカル保存し、IMAGE フレームも出力します。 |
 | `Seedance 2.0 S3 Config` | S3 の key、region、bucket、prefix をまとめて設定します。 |
 | `Seedance 2.0 S3 Upload Reference Video` | ローカル参照動画を S3 にアップロードし、短時間有効な署名付き URL を出力します。 |
-| `Seedance 2.0 S3 Browse Reference Videos` | S3 内の参照動画を一覧し、プレビュー表示して、選択した署名付き URL を出力します。 |
-| `Seedance 2.0 S3 Delete Reference Video` | 高度/手動クリーンアップ用ノードです。通常 workflow では `Omni Reference` から自動削除できます。 |
+| `Seedance 2.0 S3 Browse Reference Videos` | S3 内の参照動画を一覧し、プレビュー表示して、選択した署名付き URL を出力し、選択中の S3 object を直接削除できます。 |
 | `Seedance 2.0 Consistent Character` | 非推奨ノード。古い workflow に明確なエラーを出すために残しています。 |
 
 ---
@@ -159,8 +158,7 @@ Omni Reference delete_s3_references_after_generation = true
 - `s3_reference_json` は `Omni Reference` の自動クリーンアップ用の任意情報です。生成後に S3 オブジェクトを削除したい場合だけ接続します。
 - `Omni Reference` の `delete_s3_references_after_generation` を有効にすると、BytePlus 生成成功後に Omni が接続された S3 オブジェクトを自動削除します。
 - 生成が失敗した場合は削除されないため、S3 側の 24 時間ライフサイクル削除も併用するのが安全です。
-- `S3 Delete Reference Video` は手動削除や高度なクリーンアップ用として残しています。通常の Upload -> Omni workflow では不要です。
-- `S3 Browse Reference Videos` は現在の `selected_index` の動画だけをプレビューし、その同じ S3 object の署名付き URL を再発行します。別の参照動画を使う場合は、`selected_index` を変えてノードを再実行してください。
+- `S3 Browse Reference Videos` は一度実行して一覧を取得し、一覧内の行をクリックして参照動画を選び、もう一度実行するとプレビューと署名付き URL がその選択に更新されます。`delete_selected` を有効にして実行すると、現在選択中の S3 object を削除します。実行後、UI はこのスイッチを自動で OFF に戻します。
 
 ---
 
@@ -179,7 +177,7 @@ Omni Reference delete_s3_references_after_generation = true
 
 ## S3 の region と bucket
 
-S3 API には `region` と `bucket` が必要です。ただし、アップロード、ブラウズ、削除ノードに毎回表示して入力する必要はありません。
+S3 API には `region` と `bucket` が必要です。ただし、アップロード、ブラウズノードに毎回表示して入力する必要はありません。
 
 推奨：
 
@@ -214,7 +212,7 @@ IAM 権限：
 
 - アップロードには対象 bucket/prefix への `s3:PutObject` が必要です。
 - ブラウズとプレビューには `s3:ListBucket` と `s3:GetObject` が必要です。
-- 削除には `s3:DeleteObject` が必要です。
+- Browse ノードから削除する場合は `s3:DeleteObject` が必要です。
 - アップロード時に `AccessDenied` が出る場合は、IAM policy がより狭い prefix だけを許可していないか確認してください。ノードの実際のアップロード先は `S3 Config` の `prefix` で決まるため、この prefix と IAM の許可リソースパスが一致している必要があります。
 
 ---

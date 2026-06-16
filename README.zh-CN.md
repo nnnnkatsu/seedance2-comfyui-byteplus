@@ -70,8 +70,7 @@ pip install -r seedance2-comfyui-byteplus/requirements.txt
 | `Seedance 2.0 Save Video` | 下载 `video_url` 并保存到本地，同时输出 IMAGE 帧。 |
 | `Seedance 2.0 S3 Config` | 集中设置 S3 的 key、region、bucket、prefix。 |
 | `Seedance 2.0 S3 Upload Reference Video` | 把本地参考视频上传到 S3，并输出短时间有效的签名 URL。 |
-| `Seedance 2.0 S3 Browse Reference Videos` | 列出 S3 中已有参考视频，显示预览，并输出选中的签名 URL。 |
-| `Seedance 2.0 S3 Delete Reference Video` | 高级/手动清理用节点。普通工作流可以直接在 `Omni Reference` 里自动删除。 |
+| `Seedance 2.0 S3 Browse Reference Videos` | 列出 S3 中已有参考视频，显示预览，输出选中的签名 URL，并可直接删除选中的 S3 对象。 |
 | `Seedance 2.0 Consistent Character` | 废弃节点，只保留给旧工作流显示明确错误。 |
 
 ---
@@ -159,8 +158,7 @@ Omni Reference delete_s3_references_after_generation = true
 - `s3_reference_json` 是给 `Omni Reference` 自动清理用的可选信息。只在需要生成后删除 S3 对象时连接。
 - 如果打开 `Omni Reference` 里的 `delete_s3_references_after_generation`，BytePlus 生成成功后 Omni 会自动删除连接的 S3 对象。
 - 如果生成失败，删除不会执行，所以建议 S3 侧也设置 24 小时生命周期清理规则。
-- `S3 Delete Reference Video` 仍然保留给手动删除或高级清理场景，普通 Upload -> Omni 工作流不需要它。
-- `S3 Browse Reference Videos` 只预览当前 `selected_index` 对应的视频，并为同一个 S3 对象重新发行签名 URL。要换参考视频，修改 `selected_index` 后重新运行节点。
+- `S3 Browse Reference Videos` 先运行一次拉取列表，点击列表中的某一行选择参考视频，再运行一次即可刷新预览并输出该对象的新签名 URL。打开 `delete_selected` 后运行节点，会删除当前选中的 S3 对象；执行后 UI 会自动把开关关回去。
 
 ---
 
@@ -179,12 +177,12 @@ Omni Reference delete_s3_references_after_generation = true
 
 ## S3 的 region 和 bucket
 
-S3 API 本身必须知道 `region` 和 `bucket`，但是不需要在每个上传、浏览、删除节点里重复填写。
+S3 API 本身必须知道 `region` 和 `bucket`，但是不需要在上传、浏览节点里重复填写。
 
 推荐做法：
 
 - 在 `S3 Config` 填一次 AWS access key、secret key、`region`、`bucket`、`prefix`
-- 把 `S3 Config` 的一条 `s3_config_json` 连接到上传、浏览、删除节点
+- 把 `S3 Config` 的一条 `s3_config_json` 连接到上传、浏览节点
 - 上传/浏览节点上的 `prefix` 为空时，会使用 `S3 Config` 里的 prefix
 - 只有想临时换目录时，才在上传/浏览节点上填 `prefix`
 
@@ -214,7 +212,7 @@ IAM 权限：
 
 - 上传需要目标 bucket/prefix 上的 `s3:PutObject`。
 - 浏览和预览需要 `s3:ListBucket` 和 `s3:GetObject`。
-- 删除需要 `s3:DeleteObject`。
+- 在 Browse 节点里删除对象需要 `s3:DeleteObject`。
 - 如果上传时报 `AccessDenied`，优先检查 IAM policy 是否只允许某个更窄的 prefix。节点实际上传路径由 `S3 Config` 的 `prefix` 决定，这个 prefix 必须和 IAM 允许的资源路径一致。
 
 ---

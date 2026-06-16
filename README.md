@@ -35,8 +35,7 @@ The original project is [Anil-matcha/seedance2-comfyui](https://github.com/Anil-
 | `Seedance 2.0 Save Video` | Download a generated video URL to disk and return ComfyUI IMAGE frames. |
 | `Seedance 2.0 S3 Config` | Store AWS S3 access settings once and wire them to S3 helper nodes. |
 | `Seedance 2.0 S3 Upload Reference Video` | Upload a local reference video, including ComfyUI `Load Video` output, to S3 and output a short-lived pre-signed URL. |
-| `Seedance 2.0 S3 Browse Reference Videos` | List S3 reference videos, show mp4 previews, and output the selected pre-signed URL. |
-| `Seedance 2.0 S3 Delete Reference Video` | Advanced/manual cleanup node for deleting a known S3 reference object. Normal workflows can delete from `Omni Reference`. |
+| `Seedance 2.0 S3 Browse Reference Videos` | List S3 reference videos, show mp4 previews, output the selected pre-signed URL, and optionally delete the selected S3 object. |
 | `Seedance 2.0 Consistent Character` | Deprecated for this BytePlus direct fork. The original node was a muapi-only character-sheet helper. |
 
 ---
@@ -213,19 +212,17 @@ The upload node stores the video in S3 and returns a pre-signed `video_url`, usu
 
 If `delete_s3_references_after_generation` is enabled on `Omni Reference`, Omni deletes the connected S3 reference objects after the BytePlus generation succeeds. If generation fails before completion, deletion is not attempted, so your S3 lifecycle rule is still the fallback cleanup.
 
-`S3 Delete Reference Video` remains available for manual cleanup, but it is no longer needed in the normal Upload -> Omni workflow.
-
 Reuse a reference video already in S3:
 
 ```text
 S3 Browse Reference Videos video_url -> Omni Reference video_url_1
 ```
 
-`S3 Browse Reference Videos` lists recent objects under the configured prefix. It previews only the current `selected_index` item and outputs a newly signed URL for that same item. To choose another reference, change `selected_index` and run the node again.
+`S3 Browse Reference Videos` lists recent objects under the configured prefix. Run it once to load the list, click a row to choose a reference, then run it again to refresh the preview and output a newly signed URL for the selected object. Turn on `delete_selected` and run the node to delete the currently selected S3 object; the UI resets the switch after execution.
 
 S3 location settings:
 
-- S3 itself requires both `region` and `bucket`, but the upload/browse/delete nodes do not need those fields repeated.
+- S3 itself requires both `region` and `bucket`, but the upload/browse nodes do not need those fields repeated.
 - Recommended: connect `S3 Config` once. It outputs one `s3_config_json`, which carries AWS access key, secret key, `region`, `bucket`, and `prefix` to the S3 helper nodes.
 - The `prefix` widget on upload/browse nodes is only an override. Leave it blank to use the prefix from `S3 Config`, environment variables, local JSON config, or the built-in `video-refs` default.
 - For shared workstations where users should not edit bucket settings, create `~/.byteplus/seedance2-s3.json` on the ComfyUI machine:
@@ -247,7 +244,7 @@ IAM permissions:
 
 - Upload needs `s3:PutObject` on the target bucket/prefix.
 - Browse and preview need `s3:ListBucket` and `s3:GetObject`.
-- Delete needs `s3:DeleteObject`.
+- Deleting from the browse node needs `s3:DeleteObject`.
 - If you get `AccessDenied` during upload, check whether the IAM policy only allows a narrower prefix. The node uploads under the configured `prefix`; that prefix must match the allowed S3 resource path.
 
 Security notes:

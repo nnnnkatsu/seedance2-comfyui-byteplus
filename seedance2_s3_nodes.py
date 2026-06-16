@@ -436,34 +436,91 @@ class Seedance2S3BrowseReferenceVideos:
             "selected_index": ("INT", {"default": 1, "min": 1, "max": 999, "step": 1}),
             "max_items": ("INT", {"default": 20, "min": 1, "max": 200, "step": 1}),
             "expires_in": ("INT", {"default": DEFAULT_EXPIRES_IN, "min": 60, "max": 86400, "step": 60}),
+            "selected_s3_key": ("STRING", {"multiline": False, "default": "",
+                "tooltip": "Optional stable S3 object key selected by the browser list. If set, it is used before selected_index."}),
+            "delete_selected": ("BOOLEAN", {"default": False,
+                "tooltip": "Delete the currently selected S3 object when this node runs. The UI resets this switch after execution."}),
         }}
 
-    RETURN_TYPES = ("STRING", "STRING", "STRING")
-    RETURN_NAMES = ("video_url", "s3_reference_json", "items_json")
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("video_url",)
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0/S3"
     OUTPUT_NODE = True
 
-    def run(self, s3_config_json, prefix, selected_index, max_items, expires_in, preview_count=0):
+    def run(self, s3_config_json, prefix, selected_index, max_items, expires_in,
+            selected_s3_key="", delete_selected=False, preview_count=0):
         settings = _s3_settings(s3_config_json, prefix)
         s3 = _s3_client(settings)
-        try:
-            response = s3.list_objects_v2(Bucket=settings["bucket"], Prefix=settings["prefix"] + "/")
-        except Exception as e:
-            _friendly_s3_error("list", e, settings["bucket"], settings["prefix"])
-        objects = [
-            obj for obj in response.get("Contents", [])
-            if obj.get("Key") and obj.get("Size", 0) > 0 and obj["Key"].lower().endswith(VIDEO_EXTS)
-        ]
-        objects.sort(key=lambda obj: obj["LastModified"], reverse=True)
-        objects = objects[:int(max_items)]
-        if not objects:
-            return {"ui": {"text": ["No S3 reference videos found."]}, "result": ("", "", "[]")}
 
-        selected_pos = max(1, min(int(selected_index), len(objects))) - 1
+        def list_objects():
+            try:
+                response = s3.list_objects_v2(Bucket=settings["bucket"], Prefix=settings["prefix"] + "/")
+            except Exception as e:
+                _friendly_s3_error("list", e, settings["bucket"], settings["prefix"])
+            found = [
+                obj for obj in response.get("Contents", [])
+                if obj.get("Key") and obj.get("Size", 0) > 0 and obj["Key"].lower().endswith(VIDEO_EXTS)
+            ]
+            found.sort(key=lambda obj: obj["LastModified"], reverse=True)
+            return found[:int(max_items)]
+
+        objects = list_objects()
+        if not objects:
+            return {
+                "ui": {
+                    "text": ["No S3 reference videos found."],
+                    "s3_items_json": ["[]"],
+                    "selected_s3_key": [""],
+                    "selected_index": [""],
+                    "delete_selected": ["false"],
+                },
+                "result": ("",),
+            }
+
+        selected_key = (selected_s3_key or "").strip()
+        selected_pos = None
+        if selected_key:
+            for pos, obj in enumerate(objects):
+                if obj["Key"] == selected_key:
+                    selected_pos = pos
+                    break
+        if selected_pos is None:
+            selected_pos = max(1, min(int(selected_index), len(objects))) - 1
         selected = objects[selected_pos]
+
+        deleted_message = ""
+        if bool(delete_selected):
+            delete_key = selected_key
+            if not delete_key:
+                deleted_message = "Delete skipped: run Browse once and select a row before deleting."
+            else:
+                delete_target = next((obj for obj in objects if obj["Key"] == delete_key), None)
+            if delete_key and delete_target is None:
+                deleted_message = f"Delete skipped: selected key was not found: {delete_key}"
+            elif delete_key:
+                try:
+                    s3.delete_object(Bucket=settings["bucket"], Key=delete_key)
+                except Exception as e:
+                    _friendly_s3_error("delete", e, settings["bucket"], delete_key)
+                print(f"[Seedance2 S3 Browse] Deleted s3://{settings['bucket']}/{delete_key}")
+                deleted_message = f"Deleted: {delete_key}"
+                objects = list_objects()
+                if not objects:
+                    return {
+                        "ui": {
+                            "text": [deleted_message + "\n\nNo S3 reference videos found."],
+                            "s3_items_json": ["[]"],
+                            "selected_s3_key": [""],
+                            "selected_index": [""],
+                            "delete_selected": ["false"],
+                        },
+                        "result": ("",),
+                    }
+                selected_pos = max(0, min(selected_pos, len(objects) - 1))
+                selected = objects[selected_pos]
+
         selected_url = _presign_get(s3, settings["bucket"], selected["Key"], expires_in)
-        selected_reference_json = _s3_reference_payload(settings, selected["Key"])
 
         items = []
         lines = []
@@ -479,6 +536,7 @@ class Seedance2S3BrowseReferenceVideos:
                 "last_modified": last_modified,
                 "size": size,
                 "size_label": _format_size(size),
+                "selected": index - 1 == selected_pos,
             })
             marker = "*" if index - 1 == selected_pos else " "
             lines.append(f"{marker}{index:02d} {filename}  {last_modified}  {_format_size(size)}")
@@ -497,74 +555,30 @@ class Seedance2S3BrowseReferenceVideos:
             "type": "output",
         }
 
-        ui = {"text": [selected_line + "\n\n" + "\n".join(lines)]}
+        ui = {
+            "text": [selected_line + "\n\n" + "\n".join(lines)],
+            "s3_items_json": [json.dumps(items, ensure_ascii=False)],
+            "selected_s3_key": [selected["Key"]],
+            "selected_index": [str(selected_pos + 1)],
+            "delete_selected": ["false"],
+        }
+        if deleted_message:
+            ui["text"] = [deleted_message + "\n\n" + ui["text"][0]]
         ui.update(_video_preview_ui(preview))
         return {
             "ui": ui,
-            "result": (
-                selected_url,
-                selected_reference_json,
-                json.dumps(items, ensure_ascii=False, indent=2),
-            ),
+            "result": (selected_url,),
         }
-
-
-class Seedance2S3DeleteReferenceVideo:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {
-            "s3_config_json": ("STRING", {"forceInput": True}),
-            "s3_key": ("STRING", {"multiline": False, "default": ""}),
-            "delete_enabled": ("BOOLEAN", {"default": False}),
-        }, "optional": {
-            "s3_reference_json": ("STRING", {"multiline": True, "default": ""}),
-            "trigger": ("STRING", {"multiline": False, "default": "",
-                "tooltip": "Connect a generation request_id here so deletion runs after generation completes."}),
-        }}
-
-    RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("deleted_key", "status")
-    FUNCTION = "run"
-    CATEGORY = "🌱 Seedance 2.0/S3"
-    OUTPUT_NODE = True
-
-    def run(self, s3_config_json, s3_key, delete_enabled, s3_reference_json="", trigger=""):
-        payload = {}
-        if s3_reference_json and s3_reference_json.strip():
-            try:
-                payload = json.loads(s3_reference_json)
-            except Exception as e:
-                raise ValueError(f"Invalid s3_reference_json: {e}") from e
-        settings = _s3_settings(s3_config_json, "")
-        final_region = str(payload.get("region") or settings["region"] or DEFAULT_REGION)
-        final_bucket = str(payload.get("bucket") or settings["bucket"]).strip()
-        final_key = str(payload.get("key") or s3_key).strip()
-        enabled = bool(delete_enabled or payload.get("delete_after_generation"))
-        if not enabled:
-            return (final_key, "skipped")
-        if not final_bucket or not final_key:
-            raise ValueError("bucket and s3_key are required for deletion.")
-        delete_settings = dict(settings)
-        delete_settings["region"] = final_region
-        s3 = _s3_client(delete_settings)
-        try:
-            s3.delete_object(Bucket=final_bucket, Key=final_key)
-        except Exception as e:
-            _friendly_s3_error("delete", e, final_bucket, final_key)
-        print(f"[Seedance2 S3 Delete] Deleted s3://{final_bucket}/{final_key}")
-        return (final_key, "deleted")
 
 
 NODE_CLASS_MAPPINGS = {
     "Seedance2S3Config": Seedance2S3Config,
     "Seedance2S3UploadReferenceVideo": Seedance2S3UploadReferenceVideo,
     "Seedance2S3BrowseReferenceVideos": Seedance2S3BrowseReferenceVideos,
-    "Seedance2S3DeleteReferenceVideo": Seedance2S3DeleteReferenceVideo,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "Seedance2S3Config": "🌱 Seedance 2.0 S3 Config",
     "Seedance2S3UploadReferenceVideo": "🌱 Seedance 2.0 S3 Upload Reference Video",
     "Seedance2S3BrowseReferenceVideos": "🌱 Seedance 2.0 S3 Browse Reference Videos",
-    "Seedance2S3DeleteReferenceVideo": "🌱 Seedance 2.0 S3 Delete Reference Video",
 }
