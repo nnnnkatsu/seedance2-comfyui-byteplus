@@ -1,4 +1,9 @@
-# Seedance 2.0 ComfyUI Nodes for BytePlus ModelArk
+## 🚀 Enhanced Fork - BytePlus + AWS S3 Support
+
+> **This is an optimized fork** with direct BytePlus API integration and AWS S3 reference video support.
+> > If you need BytePlus support instead of muapi.ai, this is the version for you!
+> >
+> > > >> > ># Seedance 2.0 ComfyUI Nodes for BytePlus ModelArk
 
 Languages: [English](README.md) | [中文](README.zh-CN.md) | [日本語](README.ja-JP.md)
 
