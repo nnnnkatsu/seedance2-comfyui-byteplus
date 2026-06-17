@@ -28,6 +28,7 @@ NONE_CHOICE = "(none)"
 DEFAULT_REGION = "ap-northeast-1"
 DEFAULT_PREFIX = "video-refs"
 DEFAULT_EXPIRES_IN = 300
+VIDEO_REF_TYPE = "SEEDANCE2_VIDEO_REF"
 S3_CONFIG_PATHS = (
     "~/.byteplus/seedance2-s3.json",
     "~/.aws/seedance2-s3.json",
@@ -318,15 +319,25 @@ def _local_video_preview(file_path):
 
 def _s3_reference_payload(settings, key):
     bucket = settings["bucket"].strip()
-    return json.dumps(
-        {
-            "region": settings["region"].strip() or DEFAULT_REGION,
-            "bucket": bucket,
-            "key": key,
-            "s3_uri": f"s3://{bucket}/{key}",
-        },
-        ensure_ascii=False,
-    )
+    payload = {
+        "region": settings["region"].strip() or DEFAULT_REGION,
+        "bucket": bucket,
+        "key": key,
+        "s3_uri": f"s3://{bucket}/{key}",
+    }
+    access_key = str(settings.get("aws_access_key_id") or "").strip()
+    secret_key = str(settings.get("aws_secret_access_key") or "").strip()
+    if access_key or secret_key:
+        payload["aws_access_key_id"] = access_key
+        payload["aws_secret_access_key"] = secret_key
+    return payload
+
+
+def _video_ref_payload(url, settings=None, key=""):
+    payload = {"url": str(url or "").strip()}
+    if settings and key:
+        payload["s3"] = _s3_reference_payload(settings, key)
+    return payload
 
 
 def _friendly_s3_error(action, error, bucket, key_or_prefix):
@@ -398,8 +409,8 @@ class Seedance2S3UploadReferenceVideo:
             "video": ("VIDEO", {"tooltip": "Optional video from ComfyUI Load Video. This uses the original file path when available."}),
         }}
 
-    RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("video_url", "s3_reference_json")
+    RETURN_TYPES = (VIDEO_REF_TYPE,)
+    RETURN_NAMES = ("video_ref",)
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0/S3"
     OUTPUT_NODE = True
@@ -421,9 +432,9 @@ class Seedance2S3UploadReferenceVideo:
         except Exception as e:
             _friendly_s3_error("upload", e, settings["bucket"], key)
         url = _presign_get(s3, settings["bucket"], key, expires_in)
-        s3_reference_json = _s3_reference_payload(settings, key)
+        video_ref = _video_ref_payload(url, settings, key)
         preview = _local_video_preview(file_path)
-        return {"ui": _video_preview_ui(preview), "result": (url, s3_reference_json)}
+        return {"ui": _video_preview_ui(preview), "result": (video_ref,)}
 
 
 class Seedance2S3BrowseReferenceVideos:
@@ -442,8 +453,8 @@ class Seedance2S3BrowseReferenceVideos:
                 "tooltip": "Delete the currently selected S3 object when this node runs. The UI resets this switch after execution."}),
         }}
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("video_url",)
+    RETURN_TYPES = (VIDEO_REF_TYPE,)
+    RETURN_NAMES = ("video_ref",)
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0/S3"
     OUTPUT_NODE = True
@@ -475,7 +486,7 @@ class Seedance2S3BrowseReferenceVideos:
                     "selected_index": [""],
                     "delete_selected": ["false"],
                 },
-                "result": ("",),
+                "result": ({},),
             }
 
         selected_key = (selected_s3_key or "").strip()
@@ -515,7 +526,7 @@ class Seedance2S3BrowseReferenceVideos:
                             "selected_index": [""],
                             "delete_selected": ["false"],
                         },
-                        "result": ("",),
+                        "result": ({},),
                     }
                 selected_pos = max(0, min(selected_pos, len(objects) - 1))
                 selected = objects[selected_pos]
@@ -567,7 +578,7 @@ class Seedance2S3BrowseReferenceVideos:
         ui.update(_video_preview_ui(preview))
         return {
             "ui": ui,
-            "result": (selected_url,),
+            "result": (_video_ref_payload(selected_url, settings, selected["Key"]),),
         }
 
 

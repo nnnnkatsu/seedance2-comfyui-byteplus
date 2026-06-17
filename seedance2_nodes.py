@@ -20,16 +20,26 @@ Polling:  GET /api/v3/contents/generations/tasks/{id}
 """
 
 import base64
+import hashlib
 import io
 import json
 import os
 import re
 import time
+from datetime import datetime
 
 import numpy as np
 import requests
 import torch
 from PIL import Image
+
+try:
+    import folder_paths
+except ImportError:
+    class folder_paths:
+        @staticmethod
+        def get_output_directory():
+            return os.path.join(os.path.expanduser("~"), "comfyui_output")
 
 DEFAULT_BASE_URL = "https://ark.ap-southeast.bytepluses.com/api/v3"
 DEFAULT_MODEL = ""
@@ -52,6 +62,7 @@ ENDPOINT_ENV_VARS = (
 BASE_URL_ENV_VARS = ("BYTEPLUS_ARK_BASE_URL", "ARK_BASE_URL")
 RESOLUTION_OPTIONS = ["480p", "720p", "1080p"]
 DEFAULT_RESOLUTION = "480p"
+VIDEO_REF_TYPE = "SEEDANCE2_VIDEO_REF"
 QUALITY_TO_RESOLUTION = {
     "basic": "480p",
     "high": "720p",
@@ -137,19 +148,41 @@ def _parse_json_object(value, label):
     return data
 
 
-def _delete_s3_references(s3_config_json, reference_jsons, delete_enabled):
+def _video_ref_data(value):
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {"url": text}
+
+
+def _video_ref_url_and_s3(value):
+    data = _video_ref_data(value)
+    url = str(data.get("url") or data.get("video_url") or "").strip()
+    s3 = data.get("s3") or data.get("s3_reference") or {}
+    return url, s3 if isinstance(s3, dict) else {}
+
+
+def _delete_s3_video_refs(video_refs, delete_enabled):
     if not delete_enabled:
         return
-
-    cfg = _parse_json_object(s3_config_json, "s3_config_json")
     refs = [
-        _parse_json_object(value, f"s3_reference_json_{index}")
-        for index, value in enumerate(reference_jsons, 1)
-        if value and str(value).strip()
+        _video_ref_url_and_s3(value)[1]
+        for value in video_refs
+        if value
     ]
     refs = [ref for ref in refs if ref.get("key")]
     if not refs:
-        print("[Seedance2 Omni] S3 delete requested, but no s3_reference_json inputs were provided.")
+        print("[Seedance2 Omni] S3 delete requested, but no deletable S3 video_ref inputs were provided.")
         return
 
     try:
@@ -160,29 +193,34 @@ def _delete_s3_references(s3_config_json, reference_jsons, delete_enabled):
             "Install project requirements in the ComfyUI Python environment."
         ) from e
 
-    access_key = (
-        cfg.get("aws_access_key_id")
-        or cfg.get("access_key_id")
-        or os.environ.get("SEEDANCE2_S3_ACCESS_KEY_ID")
-        or os.environ.get("AWS_ACCESS_KEY_ID")
-        or ""
-    )
-    secret_key = (
-        cfg.get("aws_secret_access_key")
-        or cfg.get("secret_access_key")
-        or os.environ.get("SEEDANCE2_S3_SECRET_ACCESS_KEY")
-        or os.environ.get("AWS_SECRET_ACCESS_KEY")
-        or ""
-    )
-
+    seen = set()
     for ref in refs:
-        region = str(ref.get("region") or cfg.get("region") or os.environ.get("SEEDANCE2_S3_REGION")
+        region = str(ref.get("region") or os.environ.get("SEEDANCE2_S3_REGION")
                      or os.environ.get("AWS_DEFAULT_REGION") or "ap-northeast-1").strip()
-        bucket = str(ref.get("bucket") or cfg.get("bucket") or os.environ.get("SEEDANCE2_S3_BUCKET") or "").strip()
+        bucket = str(ref.get("bucket") or os.environ.get("SEEDANCE2_S3_BUCKET") or "").strip()
         key = str(ref.get("key") or "").strip()
         if not bucket or not key:
             print("[Seedance2 Omni] Skipping S3 delete because bucket or key is missing.")
             continue
+        dedupe_key = (region, bucket, key)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+
+        access_key = (
+            ref.get("aws_access_key_id")
+            or ref.get("access_key_id")
+            or os.environ.get("SEEDANCE2_S3_ACCESS_KEY_ID")
+            or os.environ.get("AWS_ACCESS_KEY_ID")
+            or ""
+        )
+        secret_key = (
+            ref.get("aws_secret_access_key")
+            or ref.get("secret_access_key")
+            or os.environ.get("SEEDANCE2_S3_SECRET_ACCESS_KEY")
+            or os.environ.get("AWS_SECRET_ACCESS_KEY")
+            or ""
+        )
 
         client_args = {"region_name": region}
         if access_key or secret_key:
@@ -437,7 +475,11 @@ def _content_audio(url, role="reference_audio"):
     return item
 
 
-def _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, content_tail=None):
+SEED_MIN = -1
+SEED_MAX = 4294967295
+
+
+def _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, seed, content_tail=None):
     content = []
     if prompt and prompt.strip():
         content.append(_content_text(prompt))
@@ -449,6 +491,7 @@ def _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generat
         "resolution": _normalize_resolution(resolution),
         "ratio": aspect_ratio or "adaptive",
         "duration": int(duration),
+        "seed": int(seed),
         "generate_audio": bool(generate_audio),
         "watermark": False,
     }
@@ -574,6 +617,231 @@ def _first_frame(video_url):
         print(f"[Seedance2] first frame failed: {e}")
         return torch.zeros(1, 64, 64, 3)
 
+
+def _video_preview_ui(filename, subfolder, folder_type="output"):
+    return {
+        "images": [{
+            "filename": filename,
+            "subfolder": subfolder,
+            "type": folder_type,
+        }],
+        "animated": (True,),
+    }
+
+
+def _safe_filename(filename):
+    base = os.path.basename(str(filename or "video.mp4"))
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("._") or "video.mp4"
+
+
+def _download_task_preview(video_url, task_id):
+    subfolder = "seedance2_task_history_previews"
+    out_dir = os.path.join(folder_paths.get_output_directory(), subfolder)
+    os.makedirs(out_dir, exist_ok=True)
+    digest = hashlib.sha1(f"{task_id}|{video_url}".encode("utf-8")).hexdigest()[:12]
+    filename = f"task_{_safe_filename(task_id)}_{digest}.mp4"
+    target = os.path.join(out_dir, filename)
+    if not os.path.exists(target) or os.path.getsize(target) <= 0:
+        r = requests.get(video_url, stream=True, timeout=300)
+        r.raise_for_status()
+        with open(target, "wb") as fh:
+            for chunk in r.iter_content(8192):
+                if chunk:
+                    fh.write(chunk)
+    return filename, subfolder
+
+
+def _timestamp_from_value(value):
+    if value in (None, ""):
+        return 0
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if number > 10_000_000_000:
+            number = number / 1000
+        return int(number)
+    text = str(value).strip()
+    if not text:
+        return 0
+    if re.fullmatch(r"\d+(\.\d+)?", text):
+        return _timestamp_from_value(float(text))
+    normalized = text.replace("Z", "+00:00")
+    try:
+        return int(datetime.fromisoformat(normalized).timestamp())
+    except Exception:
+        return 0
+
+
+def _format_task_time(record):
+    timestamp = int(record.get("created_ts") or record.get("recorded_at") or 0)
+    if timestamp:
+        try:
+            return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
+        except Exception:
+            pass
+    return str(record.get("created_at") or record.get("created") or "")
+
+
+def _task_id_from_record(record):
+    if not isinstance(record, dict):
+        return str(record or "").strip()
+    for key in ("id", "task_id", "request_id"):
+        value = str(record.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _extract_task_video_url(record):
+    if not isinstance(record, dict):
+        return ""
+    try:
+        return _output_url(record)
+    except Exception:
+        return ""
+
+
+def _task_prompt_summary(record):
+    if not isinstance(record, dict):
+        return ""
+    content = record.get("content")
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                return str(item.get("text") or "").replace("\n", " ").strip()
+    if isinstance(content, dict):
+        text = content.get("text") or content.get("prompt")
+        if text:
+            return str(text).replace("\n", " ").strip()
+    for key in ("prompt", "text"):
+        if record.get(key):
+            return str(record.get(key)).replace("\n", " ").strip()
+    return ""
+
+
+def _task_record_from_raw(raw, source="api"):
+    if isinstance(raw, str):
+        raw = {"id": raw}
+    if not isinstance(raw, dict):
+        return None
+    task_id = _task_id_from_record(raw)
+    if not task_id:
+        return None
+    created_ts = 0
+    created_at = ""
+    for key in ("created_at", "created", "created_time", "create_time", "createdAt", "createTime", "updated_at", "recorded_at"):
+        value = raw.get(key)
+        ts = _timestamp_from_value(value)
+        if ts:
+            created_ts = ts
+            created_at = str(value)
+            break
+    if not created_ts:
+        created_ts = int(raw.get("recorded_at") or 0)
+    return {
+        "id": task_id,
+        "source": source,
+        "status": str(raw.get("status") or raw.get("state") or ""),
+        "model": str(raw.get("model") or raw.get("endpoint") or ""),
+        "resolution": str(raw.get("resolution") or ""),
+        "ratio": str(raw.get("ratio") or raw.get("aspect_ratio") or ""),
+        "duration": raw.get("duration", ""),
+        "created_at": created_at,
+        "created_ts": created_ts,
+        "prompt": _task_prompt_summary(raw),
+        "video_url": _extract_task_video_url(raw),
+        "raw": raw,
+    }
+
+
+def _extract_task_list(data):
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+    for key in ("items", "tasks", "data", "list", "results"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            nested = _extract_task_list(value)
+            if nested:
+                return nested
+    return []
+
+
+def _list_tasks_from_api(api_key, max_items):
+    url = f"{_base_url()}/contents/generations/tasks"
+    attempts = (
+        {"limit": int(max_items)},
+        {"page_size": int(max_items)},
+        None,
+    )
+    last_response = None
+    for params in attempts:
+        resp = requests.get(url, headers=_auth_headers(api_key), params=params, timeout=30)
+        if resp.ok:
+            data = resp.json()
+            return [_task_record_from_raw(item, "api") for item in _extract_task_list(data)]
+        last_response = resp
+        if resp.status_code not in (400, 404, 422):
+            _check(resp)
+    if last_response is not None:
+        _check(last_response)
+    return []
+
+
+def _list_tasks_from_local(max_items):
+    return [
+        _task_record_from_raw(item, "local")
+        for item in _load_task_history()[:int(max_items)]
+    ]
+
+
+def _combined_task_records(api_key, source, max_items):
+    records = []
+    errors = []
+    if source in ("api_then_local", "api"):
+        try:
+            records.extend(item for item in _list_tasks_from_api(api_key, max_items) if item)
+        except Exception as e:
+            errors.append(f"BytePlus list API failed: {e}")
+            if source == "api":
+                raise
+    if source in ("api_then_local", "local") or errors:
+        records.extend(item for item in _list_tasks_from_local(max_items) if item)
+
+    deduped = []
+    seen = set()
+    for record in records:
+        task_id = record.get("id")
+        if not task_id or task_id in seen:
+            continue
+        seen.add(task_id)
+        deduped.append(record)
+    deduped.sort(key=lambda item: int(item.get("created_ts") or 0), reverse=True)
+    return deduped[:int(max_items)], errors
+
+
+def _task_browser_item(record, index, selected=False):
+    details = " ".join(str(value) for value in (
+        record.get("status", ""),
+        record.get("resolution", ""),
+        record.get("ratio", ""),
+        f"{record.get('duration')}s" if record.get("duration") else "",
+    ) if value)
+    prompt = str(record.get("prompt") or "").strip()
+    if prompt:
+        details = f"{details} {prompt}".strip()
+    return {
+        "index": index,
+        "task_id": record.get("id", ""),
+        "status": record.get("status", ""),
+        "created_at": _format_task_time(record),
+        "details": details,
+        "source": record.get("source", ""),
+        "selected": bool(selected),
+    }
+
 # ── Nodes ──────────────────────────────────────────────────────────────────────
 
 class Seedance2TextToVideo:
@@ -594,6 +862,7 @@ class Seedance2TextToVideo:
             "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
                 "tooltip": "BytePlus output resolution. 1080p is not supported by Seedance 2.0 Fast endpoints."}),
             "duration": ([5, 10, 15], {"default": 5}),
+            "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
         }, "optional": {
             "api_key": ("STRING", {"multiline": False, "default": ""}),
             "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
@@ -605,9 +874,9 @@ class Seedance2TextToVideo:
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, prompt, aspect_ratio, resolution, duration, api_key="", endpoint="", generate_audio=True):
+    def run(self, prompt, aspect_ratio, resolution, duration, seed, api_key="", endpoint="", generate_audio=True):
         api_key = _load_api_key(api_key)
-        payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio)
+        payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, seed)
         print("[Seedance2 T2V] Submitting...")
         rid = _submit(api_key, endpoint, payload)
         result = _poll(api_key, rid)
@@ -634,6 +903,7 @@ class Seedance2ImageToVideo:
             "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
                 "tooltip": "BytePlus output resolution. 1080p is not supported by Seedance 2.0 Fast endpoints."}),
             "duration": ([5, 10, 15], {"default": 5}),
+            "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
         }, "optional": {
             "api_key": ("STRING", {"multiline": False, "default": ""}),
             "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
@@ -648,7 +918,7 @@ class Seedance2ImageToVideo:
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, prompt, aspect_ratio, resolution, duration, api_key="", endpoint="", generate_audio=True,
+    def run(self, prompt, aspect_ratio, resolution, duration, seed, api_key="", endpoint="", generate_audio=True,
             image_1=None, image_2=None, image_3=None, image_4=None, image_5=None,
             image_6=None, image_7=None, image_8=None, image_9=None):
         api_key = _load_api_key(api_key)
@@ -659,14 +929,65 @@ class Seedance2ImageToVideo:
             if img is not None:
                 print(f"[Seedance2 I2V] Encoding image {i}...")
                 images_list.append(_upload_image(api_key, img))
-        if not images_list: raise ValueError("At least one image required.")
+        if not images_list:
+            raise ValueError("At least one image required.")
         content_tail = [_content_image(url, "reference_image") for url in images_list]
-        payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, content_tail)
+        payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, seed, content_tail)
         print(f"[Seedance2 I2V] Submitting ({len(images_list)} image(s))...")
         rid = _submit(api_key, endpoint, payload)
         result = _poll(api_key, rid)
         url = _output_url(result)
         print(f"[Seedance2 I2V] Done → {url}")
+        return (url, _first_frame(url), rid)
+
+
+class Seedance2FirstLastFrameToVideo:
+    """
+    Seedance 2.0 First/Last Frame-to-Video
+    ---------------------------------------
+    Generate video from a first frame and an optional last frame.
+    BytePlus does not allow first/last frame inputs to be mixed with
+    reference images, reference videos, reference audio, or draft tasks.
+    """
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "first_frame_image": ("IMAGE",),
+            "prompt": ("STRING", {"multiline": True,
+                "default": "Generate a smooth cinematic video starting from the first frame."}),
+            "aspect_ratio": (["adaptive", "16:9", "9:16", "4:3", "3:4", "1:1", "21:9"], {"default": "adaptive",
+                "tooltip": "Use adaptive to follow the first frame aspect ratio."}),
+            "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
+                "tooltip": "BytePlus output resolution. 1080p is not supported by Seedance 2.0 Fast endpoints."}),
+            "duration": ("INT", {"default": 5, "min": 4, "max": 15, "step": 1}),
+            "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
+        }, "optional": {
+            "api_key": ("STRING", {"multiline": False, "default": ""}),
+            "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
+                "tooltip": "BytePlus ModelArk endpoint ID, for example ep-..."}),
+            "generate_audio": ("BOOLEAN", {"default": True}),
+            "last_frame_image": ("IMAGE",),
+        }}
+    RETURN_TYPES = ("STRING", "IMAGE", "STRING")
+    RETURN_NAMES = ("video_url", "first_frame", "request_id")
+    FUNCTION = "run"
+    CATEGORY = "🌱 Seedance 2.0"
+
+    def run(self, first_frame_image, prompt, aspect_ratio, resolution, duration, seed,
+            api_key="", endpoint="", generate_audio=True, last_frame_image=None):
+        api_key = _load_api_key(api_key)
+        print("[Seedance2 Frame] Encoding first frame...")
+        content_tail = [_content_image(_upload_image(api_key, first_frame_image), "first_frame")]
+        if last_frame_image is not None:
+            print("[Seedance2 Frame] Encoding last frame...")
+            content_tail.append(_content_image(_upload_image(api_key, last_frame_image), "last_frame"))
+
+        payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, seed, content_tail)
+        print(f"[Seedance2 Frame] Submitting ({len(content_tail)} frame image(s))...")
+        rid = _submit(api_key, endpoint, payload)
+        result = _poll(api_key, rid)
+        url = _output_url(result)
+        print(f"[Seedance2 Frame] Done → {url}")
         return (url, _first_frame(url), rid)
 
 
@@ -687,6 +1008,7 @@ class Seedance2Extend:
             "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
                 "tooltip": "BytePlus output resolution. 1080p is not supported by Seedance 2.0 Fast endpoints."}),
             "duration": ([5, 10, 15], {"default": 5}),
+            "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
         }, "optional": {
             "api_key": ("STRING", {"multiline": False, "default": ""}),
             "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
@@ -700,7 +1022,7 @@ class Seedance2Extend:
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, request_id, resolution, duration, api_key="", endpoint="", generate_audio=True, prompt=""):
+    def run(self, request_id, resolution, duration, seed, api_key="", endpoint="", generate_audio=True, prompt=""):
         api_key = _load_api_key(api_key)
         if not request_id.strip(): raise ValueError("request_id required.")
         source = request_id.strip()
@@ -714,7 +1036,7 @@ class Seedance2Extend:
             source_url = _output_url(source_result)
         extend_prompt = prompt.strip() or "Continue the reference video naturally."
         content_tail = [_content_video(source_url, "reference_video")]
-        payload = _build_payload(endpoint, extend_prompt, "adaptive", resolution, duration, generate_audio, content_tail)
+        payload = _build_payload(endpoint, extend_prompt, "adaptive", resolution, duration, generate_audio, seed, content_tail)
         print(f"[Seedance2 Extend] Submitting extension from {source}...")
         new_id = _submit(api_key, endpoint, payload)
         result = _poll(api_key, new_id)
@@ -816,6 +1138,153 @@ class Seedance2RetrieveTask:
         return (video_url, first_frame, resolved_id, status, task_json)
 
 
+class Seedance2TaskHistoryBrowser:
+    """
+    Browse recent BytePlus video generation tasks.
+
+    The node tries the BytePlus list-task API first, then falls back to the
+    local task IDs recorded by this node pack. Selecting a row retrieves that
+    task again so the video URL can be previewed and reused as video_ref.
+    """
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "source": (["api_then_local", "api", "local"], {"default": "api_then_local",
+                "tooltip": "api_then_local tries BytePlus list tasks first, then falls back to this node pack's local task history."}),
+            "selected_index": ("INT", {"default": 1, "min": 1, "max": 999, "step": 1}),
+            "max_items": ("INT", {"default": 20, "min": 1, "max": 200, "step": 1}),
+            "selected_task_id": ("STRING", {"multiline": False, "default": "",
+                "tooltip": "Stable task ID selected by the browser list. If set, it is used before selected_index."}),
+            "download_preview": ("BOOLEAN", {"default": True,
+                "tooltip": "Download the selected task video for inline preview when a video URL is available."}),
+        }, "optional": {
+            "api_key": ("STRING", {"multiline": False, "default": ""}),
+        }}
+
+    RETURN_TYPES = ("STRING", VIDEO_REF_TYPE, "IMAGE", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "video_ref", "first_frame", "request_id", "status", "task_json")
+    FUNCTION = "run"
+    CATEGORY = "験 Seedance 2.0"
+    OUTPUT_NODE = True
+
+    def run(self, source, selected_index, max_items, selected_task_id, download_preview, api_key=""):
+        api_key = _load_api_key(api_key)
+        records, errors = _combined_task_records(api_key, source, max_items)
+        if not records:
+            text = "No BytePlus generation tasks found."
+            if errors:
+                text += "\n\n" + "\n".join(errors)
+            return {
+                "ui": {
+                    "text": [text],
+                    "task_items_json": ["[]"],
+                    "selected_task_id": [""],
+                    "selected_index": [""],
+                },
+                "result": ("", {}, _blank_image(), "", "", "{}"),
+            }
+
+        selected_id = str(selected_task_id or "").strip()
+        selected_pos = None
+        if selected_id:
+            for pos, record in enumerate(records):
+                if record.get("id") == selected_id:
+                    selected_pos = pos
+                    break
+        if selected_pos is None:
+            selected_pos = max(1, min(int(selected_index), len(records))) - 1
+        selected = records[selected_pos]
+        selected_id = selected.get("id") or ""
+
+        task_result = {}
+        retrieve_error = ""
+        if selected_id:
+            try:
+                print(f"[Seedance2 TaskHistory] Retrieving {selected_id}...")
+                task_result = _retrieve_task(api_key, selected_id)
+                _record_task(selected_id, task_result)
+            except Exception as e:
+                retrieve_error = f"Retrieve selected task failed: {e}"
+                print(f"[Seedance2 TaskHistory] {retrieve_error}")
+                task_result = selected.get("raw") if isinstance(selected.get("raw"), dict) else {}
+
+        status = str(task_result.get("status") or selected.get("status") or "")
+        video_url = _extract_task_video_url(task_result) or str(selected.get("video_url") or "")
+        video_ref = {"url": video_url} if video_url else {}
+        first_frame = _first_frame(video_url) if (download_preview and video_url.startswith(("http://", "https://"))) else _blank_image()
+        task_json = json.dumps(task_result or selected.get("raw") or selected, ensure_ascii=False, indent=2)
+
+        selected["status"] = status or selected.get("status", "")
+        selected["video_url"] = video_url
+        items = [
+            _task_browser_item(record, index, index - 1 == selected_pos)
+            for index, record in enumerate(records, 1)
+        ]
+
+        lines = []
+        for item in items:
+            marker = "*" if item["selected"] else " "
+            lines.append(
+                f"{marker}{item['index']:02d} {item['task_id']}  "
+                f"{item['status'] or '(unknown)'}  {item['created_at']}  {item['details']}"
+            )
+        selected_line = (
+            f"Selected {selected_pos + 1:02d}: {selected_id}  "
+            f"{status or '(unknown)'}  {_format_task_time(selected)}"
+        )
+        text_parts = [selected_line]
+        if errors:
+            text_parts.extend(errors)
+        if retrieve_error:
+            text_parts.append(retrieve_error)
+        if video_url:
+            text_parts.append(f"video_url: {video_url}")
+        else:
+            text_parts.append("video_url: (none; task may still be running, failed, or expired)")
+        text_parts.append("\n".join(lines))
+
+        ui = {
+            "text": ["\n\n".join(part for part in text_parts if part)],
+            "task_items_json": [json.dumps(items, ensure_ascii=False)],
+            "selected_task_id": [selected_id],
+            "selected_index": [str(selected_pos + 1)],
+        }
+        if download_preview and video_url.startswith(("http://", "https://")):
+            try:
+                filename, subfolder = _download_task_preview(video_url, selected_id)
+                ui.update(_video_preview_ui(filename, subfolder))
+            except Exception as e:
+                ui["text"] = [ui["text"][0] + f"\n\nPreview download failed: {e}"]
+
+        return {
+            "ui": ui,
+            "result": (video_url, video_ref, first_frame, selected_id, status, task_json),
+        }
+
+
+class Seedance2VideoReference:
+    """
+    Convert a public video URL, S3 pre-signed URL, or asset:// ID into the
+    structured reference type consumed by Omni.
+    """
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "video_url": ("STRING", {"multiline": False, "default": "",
+                "tooltip": "Reference video URL, S3 pre-signed URL, or asset:// ID."}),
+        }}
+    RETURN_TYPES = (VIDEO_REF_TYPE,)
+    RETURN_NAMES = ("video_ref",)
+    FUNCTION = "run"
+    CATEGORY = "🌱 Seedance 2.0"
+
+    def run(self, video_url):
+        url = str(video_url or "").strip()
+        if not url:
+            raise ValueError("video_url is required.")
+        return ({"url": url},)
+
+
 class Seedance2Omni:
     """
     Seedance 2.0 Omni Reference
@@ -825,11 +1294,11 @@ class Seedance2Omni:
 
     Reference media in the prompt using:
       @image1 … @image9   — uploaded image tensors
-      @video1 … @video3   — video URL, S3 pre-signed URL, or asset:// ID
+      @video1 … @video3   — SEEDANCE2_VIDEO_REF from S3 nodes or Video Reference URL
       @audio1 … @audio3   — audio URL, asset:// ID, data URL, or local audio file
 
     BytePlus does not accept local video files in this request. Upload private
-    videos through the S3 helper nodes and pass the generated video_url.
+    videos through the S3 helper nodes and pass the generated video_ref.
     Local audio files in ComfyUI/input/ are encoded as data:audio URLs.
 
     Example:
@@ -842,8 +1311,8 @@ class Seedance2Omni:
     @classmethod
     def INPUT_TYPES(cls):
         audio_files = _list_input_files(AUDIO_EXTS)
-        video_url_tip = ("Reference video URL. Use a public http(s) URL, S3 pre-signed URL, "
-                         "or asset:// ID. Local video files must be uploaded with the S3 helper nodes first.")
+        video_ref_tip = ("Reference video object from S3 Upload/Browse or Video Reference URL. "
+                         "S3 refs can be deleted after generation when cleanup is enabled.")
         audio_tip = ("Pick an mp3 or wav file from ComfyUI/input/. BytePlus audio refs: "
                      "2-15s each, max 3 clips, total <=15s, each file <=15 MB.")
         audio_url_tip = ("Reference audio. Use a public http(s) URL, asset:// ID, data:audio URL, "
@@ -855,31 +1324,22 @@ class Seedance2Omni:
             "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
                 "tooltip": "BytePlus output resolution. 1080p is not supported by Seedance 2.0 Fast endpoints."}),
             "duration": ("INT", {"default": 5, "min": 4, "max": 15, "step": 1}),
+            "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
         }, "optional": {
             "api_key":      ("STRING", {"multiline": False, "default": ""}),
             "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
                 "tooltip": "BytePlus ModelArk endpoint ID, for example ep-..."}),
             "generate_audio": ("BOOLEAN", {"default": True}),
-            "character_id": ("STRING", {"multiline": False, "default": "",
-                "tooltip": "BytePlus asset:// ID or asset ID for a digital character"}),
             # Reference images (uploaded from ComfyUI tensors)
             "image_1": ("IMAGE",), "image_2": ("IMAGE",), "image_3": ("IMAGE",),
             "image_4": ("IMAGE",), "image_5": ("IMAGE",), "image_6": ("IMAGE",),
             "image_7": ("IMAGE",), "image_8": ("IMAGE",), "image_9": ("IMAGE",),
-            # Reference videos (@video1 … @video3): URL only
-            "video_url_1":  ("STRING", {"multiline": False, "default": "", "tooltip": video_url_tip}),
-            "video_url_2":  ("STRING", {"multiline": False, "default": "", "tooltip": video_url_tip}),
-            "video_url_3":  ("STRING", {"multiline": False, "default": "", "tooltip": video_url_tip}),
-            "s3_config_json": ("STRING", {"forceInput": True,
-                "tooltip": "Connect S3 Config here when deleting uploaded S3 reference videos after generation."}),
-            "s3_reference_json_1": ("STRING", {"forceInput": True,
-                "tooltip": "Optional metadata from S3 Upload/Browse Reference Video for video_url_1 cleanup."}),
-            "s3_reference_json_2": ("STRING", {"forceInput": True,
-                "tooltip": "Optional metadata from S3 Upload/Browse Reference Video for video_url_2 cleanup."}),
-            "s3_reference_json_3": ("STRING", {"forceInput": True,
-                "tooltip": "Optional metadata from S3 Upload/Browse Reference Video for video_url_3 cleanup."}),
+            # Reference videos (@video1 … @video3): structured video refs
+            "video_ref_1": (VIDEO_REF_TYPE, {"tooltip": video_ref_tip}),
+            "video_ref_2": (VIDEO_REF_TYPE, {"tooltip": video_ref_tip}),
+            "video_ref_3": (VIDEO_REF_TYPE, {"tooltip": video_ref_tip}),
             "delete_s3_references_after_generation": ("BOOLEAN", {"default": False,
-                "tooltip": "Delete connected S3 reference videos after this Omni generation succeeds."}),
+                "tooltip": "Delete connected S3 video_ref objects after this Omni generation succeeds."}),
             # Reference audio (@audio1 … @audio3): dropdown + override string
             "audio_file_1": (audio_files, {"default": _NONE_CHOICE, "tooltip": audio_tip}),
             "audio_url_1":  ("STRING", {"multiline": False, "default": "", "tooltip": audio_url_tip}),
@@ -893,10 +1353,11 @@ class Seedance2Omni:
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, prompt, aspect_ratio, resolution, duration, api_key="", endpoint="", generate_audio=True,
+    def run(self, prompt, aspect_ratio, resolution, duration, seed, api_key="", endpoint="", generate_audio=True,
             character_id="",
             image_1=None, image_2=None, image_3=None, image_4=None, image_5=None,
             image_6=None, image_7=None, image_8=None, image_9=None,
+            video_ref_1=None, video_ref_2=None, video_ref_3=None,
             video_file_1=_NONE_CHOICE, video_url_1="",
             video_file_2=_NONE_CHOICE, video_url_2="",
             video_file_3=_NONE_CHOICE, video_url_3="",
@@ -922,7 +1383,7 @@ class Seedance2Omni:
             raise RuntimeError(
                 "[Seedance2 Omni] Local video_file inputs were removed because BytePlus "
                 "requires reference videos to be URLs or asset:// IDs. Upload local videos "
-                "with S3 Upload Reference Video, then connect its video_url to Omni."
+                "with S3 Upload Reference Video, then connect its video_ref to Omni."
             )
 
         # For audio slots, prefer the dropdown selection; fall back to the URL/path override.
@@ -931,11 +1392,32 @@ class Seedance2Omni:
                 return dropdown  # filename inside ComfyUI/input/ — _resolve_media_ref handles it
             return url
 
-        video_refs = [
-            video_url_1,
-            video_url_2,
-            video_url_3,
-        ]
+        legacy_s3_config = _parse_json_object(s3_config_json, "s3_config_json") if s3_config_json else {}
+
+        def _legacy_video_ref(url, s3_json, index):
+            data = {"url": str(url).strip()}
+            if s3_json and str(s3_json).strip():
+                s3_data = _parse_json_object(s3_json, f"s3_reference_json_{index}")
+                for key in ("aws_access_key_id", "aws_secret_access_key", "access_key_id", "secret_access_key"):
+                    if legacy_s3_config.get(key) and not s3_data.get(key):
+                        s3_data[key] = legacy_s3_config[key]
+                if legacy_s3_config.get("region") and not s3_data.get("region"):
+                    s3_data["region"] = legacy_s3_config["region"]
+                if legacy_s3_config.get("bucket") and not s3_data.get("bucket"):
+                    s3_data["bucket"] = legacy_s3_config["bucket"]
+                data["s3"] = s3_data
+            return data
+
+        video_refs = []
+        for index, (ref, legacy_url, legacy_s3_json) in enumerate((
+            (video_ref_1, video_url_1, s3_reference_json_1),
+            (video_ref_2, video_url_2, s3_reference_json_2),
+            (video_ref_3, video_url_3, s3_reference_json_3),
+        ), 1):
+            if ref:
+                video_refs.append(ref)
+            elif legacy_url and str(legacy_url).strip():
+                video_refs.append(_legacy_video_ref(legacy_url, legacy_s3_json, index))
         audio_refs = [
             _pick(audio_file_1, audio_url_1),
             _pick(audio_file_2, audio_url_2),
@@ -944,8 +1426,9 @@ class Seedance2Omni:
 
         # Resolve references (local path → upload, URL → passthrough)
         video_files = []
-        for u in video_refs:
-            resolved = _resolve_media_ref(api_key, u, "video")
+        for ref in video_refs:
+            url, _ = _video_ref_url_and_s3(ref)
+            resolved = _resolve_media_ref(api_key, url, "video")
             if resolved:
                 video_files.append(resolved)
 
@@ -956,16 +1439,11 @@ class Seedance2Omni:
                 audio_files.append(resolved)
 
         content_tail = []
-        if character_id and character_id.strip():
-            asset_ref = character_id.strip()
-            if not asset_ref.startswith("asset://"):
-                asset_ref = f"asset://{asset_ref}"
-            content_tail.append(_content_image(asset_ref, "reference_image"))
         content_tail.extend(_content_image(url, "reference_image") for url in images_list)
         content_tail.extend(_content_video(url, "reference_video") for url in video_files)
         content_tail.extend(_content_audio(url, "reference_audio") for url in audio_files)
 
-        payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, content_tail)
+        payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, seed, content_tail)
 
         print(f"[Seedance2 Omni] PAYLOAD: {payload}")
         print(f"[Seedance2 Omni] Submitting "
@@ -974,11 +1452,7 @@ class Seedance2Omni:
         result = _poll(api_key, rid)
         url = _output_url(result)
         print(f"[Seedance2 Omni] Done → {url}")
-        _delete_s3_references(
-            s3_config_json,
-            [s3_reference_json_1, s3_reference_json_2, s3_reference_json_3],
-            delete_s3_references_after_generation,
-        )
+        _delete_s3_video_refs(video_refs, delete_s3_references_after_generation)
         return (url, _first_frame(url), rid)
 
 
@@ -1079,6 +1553,7 @@ class Seedance2ConsistentVideo:
             "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
                 "tooltip": "BytePlus output resolution. 1080p is not supported by Seedance 2.0 Fast endpoints."}),
             "duration": ([5, 10, 15], {"default": 5}),
+            "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
         }, "optional": {
             "api_key":         ("STRING", {"multiline": False, "default": ""}),
             "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
@@ -1097,7 +1572,7 @@ class Seedance2ConsistentVideo:
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, prompt, aspect_ratio, resolution, duration, api_key="", endpoint="", generate_audio=True,
+    def run(self, prompt, aspect_ratio, resolution, duration, seed, api_key="", endpoint="", generate_audio=True,
             sheet_image=None, sheet_url="", scene_image_2=None, scene_image_3=None):
         api_key = _load_api_key(api_key)
 
@@ -1125,7 +1600,7 @@ class Seedance2ConsistentVideo:
             prompt = f"@image1 {prompt.strip()}"
 
         content_tail = [_content_image(url, "reference_image") for url in images_list]
-        payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, content_tail)
+        payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, seed, content_tail)
 
         print(f"[Seedance2 ConsistentVideo] Submitting with {len(images_list)} image(s)...")
         rid = _submit(api_key, endpoint, payload)
@@ -1139,8 +1614,11 @@ NODE_CLASS_MAPPINGS = {
     "Seedance2ApiKey":            Seedance2ApiKey,
     "Seedance2BytePlusConfig":    Seedance2BytePlusConfig,
     "Seedance2RetrieveTask":      Seedance2RetrieveTask,
+    "Seedance2TaskHistoryBrowser": Seedance2TaskHistoryBrowser,
+    "Seedance2VideoReference":    Seedance2VideoReference,
     "Seedance2TextToVideo":       Seedance2TextToVideo,
     "Seedance2ImageToVideo":      Seedance2ImageToVideo,
+    "Seedance2FirstLastFrameToVideo": Seedance2FirstLastFrameToVideo,
     "Seedance2Extend":            Seedance2Extend,
     "Seedance2Omni":              Seedance2Omni,
     "Seedance2Character":         Seedance2Character,
@@ -1148,11 +1626,14 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "Seedance2TaskHistoryBrowser": "🌱 Seedance 2.0 Generation History Browser",
     "Seedance2ApiKey":            "🔑 Seedance 2.0 API Key",
     "Seedance2BytePlusConfig":    "🌱 Seedance2BytePlusConfig",  
     "Seedance2RetrieveTask":      "🌱 Seedance 2.0 Retrieve Task Result",
+    "Seedance2VideoReference":    "🌱 Seedance 2.0 Video Reference URL",
     "Seedance2TextToVideo":       "🌱 Seedance 2.0 Text-to-Video",
     "Seedance2ImageToVideo":      "🌱 Seedance 2.0 Image-to-Video",
+    "Seedance2FirstLastFrameToVideo": "🌱 Seedance 2.0 First/Last Frame-to-Video",
     "Seedance2Extend":            "🌱 Seedance 2.0 Extend",
     "Seedance2Omni":              "🌱 Seedance 2.0 Omni Reference",
     "Seedance2Character":         "Deprecated - MuAPI-only Character Sheet (Unsupported)",

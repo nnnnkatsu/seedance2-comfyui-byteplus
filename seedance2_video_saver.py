@@ -1,6 +1,7 @@
 """Seedance 2.0 Video Saver — downloads a video URL, saves to disk, returns frames."""
 
 import os
+import json
 import numpy as np
 import requests
 import torch
@@ -23,6 +24,47 @@ def _video_preview_ui(filename, subfolder, folder_type="output"):
         }],
         "animated": (True,),
     }
+
+
+VIDEO_REF_TYPE = "SEEDANCE2_VIDEO_REF"
+
+
+def _video_ref_data(value):
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {"url": text}
+
+
+def _video_ref_summary(data):
+    url = str(data.get("url") or data.get("video_url") or "").strip()
+    s3 = data.get("s3") or data.get("s3_reference") or {}
+    lines = [
+        "Seedance 2.0 video_ref",
+        f"url: {url or '(empty)'}",
+        f"url_type: {'asset' if url.startswith('asset://') else 'http' if url.startswith(('http://', 'https://')) else 'unknown'}",
+    ]
+    if isinstance(s3, dict) and s3:
+        lines.extend([
+            f"s3_uri: {s3.get('s3_uri') or '(none)'}",
+            f"bucket: {s3.get('bucket') or '(none)'}",
+            f"key: {s3.get('key') or '(none)'}",
+            f"region: {s3.get('region') or '(none)'}",
+            f"deletable: {'yes' if s3.get('bucket') and s3.get('key') else 'no'}",
+        ])
+    else:
+        lines.append("deletable: no S3 metadata")
+    return "\n".join(lines)
 
 
 class Seedance2VideoSaver:
@@ -137,11 +179,41 @@ class Seedance2VideoPreview:
         return {"ui": {"text": [msg]}, "result": ("ERROR",)}
 
 
+class Seedance2VideoReferencePreview:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "video_ref": (VIDEO_REF_TYPE,),
+            "video_url": ("STRING", {"multiline": True, "default": ""}),
+            "s3_key": ("STRING", {"multiline": False, "default": ""}),
+        }}
+    RETURN_TYPES = ()
+    RETURN_NAMES = ()
+    FUNCTION = "run"
+    CATEGORY = "🌱 Seedance 2.0"
+    OUTPUT_NODE = True
+
+    def run(self, video_ref, video_url="", s3_key=""):
+        data = _video_ref_data(video_ref)
+        url = str(data.get("url") or data.get("video_url") or "").strip()
+        s3 = data.get("s3") or data.get("s3_reference") or {}
+        key = str(s3.get("key") or "") if isinstance(s3, dict) else ""
+        return {
+            "ui": {
+                "video_url": [url],
+                "s3_key": [key],
+            },
+            "result": (),
+        }
+
+
 NODE_CLASS_MAPPINGS = {
     "Seedance2VideoSaver": Seedance2VideoSaver,
     "Seedance2VideoPreview": Seedance2VideoPreview,
+    "Seedance2VideoReferencePreview": Seedance2VideoReferencePreview,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "Seedance2VideoSaver": "🌱 Seedance 2.0 Save Video",
     "Seedance2VideoPreview": "🌱 Seedance 2.0 Preview Video URL",
+    "Seedance2VideoReferencePreview": "🌱 Seedance 2.0 Preview Video Reference",
 }
