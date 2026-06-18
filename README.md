@@ -188,6 +188,8 @@ Run it once to load recent tasks, click a row, then run it again to retrieve tha
 
 BytePlus task data and output URLs are short-lived, usually around 24 hours. Use `Save Video` for anything you need to keep.
 
+Expired tasks are shown in red. Selecting an expired task does not output `video_url`, `video_ref`, or `task_json`; the preview area shows an expired marker instead.
+
 ## Audio References
 
 `Omni Reference` supports local audio files and audio URLs.

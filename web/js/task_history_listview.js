@@ -2,6 +2,9 @@ import { app } from "../../../scripts/app.js";
 
 const NODE_CLASS = "Seedance2TaskHistoryBrowser";
 const LIST_WIDGET = "seedance_task_history_list";
+const EXPIRED_PREVIEW_WIDGET = "seedance_task_history_expired_preview";
+const BUILTIN_VIDEO_PREVIEW_WIDGET = "video-preview";
+const BUILTIN_CANVAS_IMAGE_PREVIEW_WIDGET = "$$canvas-image-preview";
 const LIST_HEIGHT = 206;
 const HEADER_HEIGHT = 24;
 const ROW_HEIGHT = 24;
@@ -41,6 +44,136 @@ function setWidgetValue(node, name, value) {
 function markDirty(node) {
     node.setDirtyCanvas?.(true, true);
     app.graph?.setDirtyCanvas?.(true, true);
+}
+
+function messageValue(message, key) {
+    if (!Object.prototype.hasOwnProperty.call(message || {}, key)) {
+        return null;
+    }
+    return String(message?.[key]?.[0] ?? message?.[key] ?? "");
+}
+
+function removeWidgetWhere(node, predicate) {
+    if (!node.widgets?.length) {
+        return;
+    }
+    for (let i = node.widgets.length - 1; i >= 0; i--) {
+        const w = node.widgets[i];
+        if (!predicate(w)) {
+            continue;
+        }
+        try {
+            w.onRemove?.();
+        } catch (err) {
+            console.warn("[Seedance2 Task Browser] Preview widget cleanup failed:", err);
+        }
+        try {
+            w.element?.remove?.();
+        } catch {
+            // DOMWidget removal is best effort; splicing the widget is the important part.
+        }
+        node.widgets.splice(i, 1);
+    }
+}
+
+function clearNativePreview(node) {
+    removeWidgetWhere(node, (w) =>
+        w.name === BUILTIN_VIDEO_PREVIEW_WIDGET ||
+        w.name === BUILTIN_CANVAS_IMAGE_PREVIEW_WIDGET ||
+        (w.type === "video" && String(w.name || "").includes("preview"))
+    );
+    try {
+        node.videoContainer?.replaceChildren?.();
+    } catch {
+        // Keep cleanup best effort.
+    }
+    node.videoContainer = undefined;
+    node.imgs = undefined;
+    node.images = undefined;
+    node.preview = undefined;
+    node.animatedImages = undefined;
+    node.imageIndex = null;
+    node.overIndex = null;
+    node.pointerDown = null;
+}
+
+function removeExpiredPreview(node) {
+    removeWidgetWhere(node, (w) => w.name === EXPIRED_PREVIEW_WIDGET);
+}
+
+function buildExpiredPreview(taskId) {
+    const box = document.createElement("div");
+    box.style.cssText = [
+        "box-sizing:border-box",
+        "width:100%",
+        "height:260px",
+        "min-height:220px",
+        "display:flex",
+        "flex-direction:column",
+        "align-items:center",
+        "justify-content:center",
+        "gap:14px",
+        "border:1px solid #5a2329",
+        "background:#1b0f12",
+        "color:#ffd0d0",
+        "font-family:Inter,Arial,sans-serif",
+        "user-select:none",
+    ].join(";");
+
+    const cross = document.createElement("div");
+    cross.textContent = "X";
+    cross.style.cssText = [
+        "width:128px",
+        "height:128px",
+        "display:flex",
+        "align-items:center",
+        "justify-content:center",
+        "color:#ff5c5c",
+        "font-size:128px",
+        "font-weight:200",
+        "line-height:1",
+    ].join(";");
+
+    const title = document.createElement("div");
+    title.textContent = "EXPIRED - NO OUTPUT";
+    title.style.cssText = "font-size:18px;font-weight:700;letter-spacing:0;color:#ffd0d0;";
+
+    const detail = document.createElement("div");
+    detail.textContent = taskId ? `task: ${taskId}` : "BytePlus removed the generated video.";
+    detail.style.cssText = "max-width:92%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:#c98f96;";
+
+    box.append(cross, title, detail);
+    return box;
+}
+
+function showExpiredPreview(node, taskId) {
+    clearNativePreview(node);
+    removeExpiredPreview(node);
+    if (typeof node.addDOMWidget !== "function") {
+        markDirty(node);
+        return;
+    }
+    const element = buildExpiredPreview(taskId);
+    const w = node.addDOMWidget(EXPIRED_PREVIEW_WIDGET, "seedance-expired-preview", element, {
+        hideOnZoom: false,
+        canvasOnly: true,
+    });
+    w.serialize = false;
+    w.serializeValue = () => undefined;
+    w.computeLayoutSize = () => ({ minHeight: 260, minWidth: 320 });
+    markDirty(node);
+}
+
+function applyPreviewState(node, message) {
+    const expiredTaskId = messageValue(message, "task_preview_expired");
+    if (expiredTaskId === null) {
+        return;
+    }
+    if (expiredTaskId) {
+        showExpiredPreview(node, expiredTaskId);
+    } else {
+        removeExpiredPreview(node);
+    }
 }
 
 function stopEvent(event) {
@@ -335,7 +468,7 @@ function ensureListWidget(node) {
                 return;
             }
 
-            const dateWidth = 122;
+            const dateWidth = 178;
             const statusWidth = 74;
             const indexWidth = 34;
             const idWidth = 178;
@@ -350,21 +483,30 @@ function ensureListWidget(node) {
                 const isSelected = selectedId
                     ? item.task_id === selectedId
                     : (selectedIndex ? Number(item.index) === selectedIndex : !!item.selected);
+                const isExpired = !!item.expired ||
+                    String(item.status || "").toLowerCase() === "expired" ||
+                    String(item.created_at || "").toLowerCase().includes("(expired)");
 
-                ctx.fillStyle = isSelected ? "#2f6fb2" : (row % 2 ? "#191919" : "#171717");
+                ctx.fillStyle = isSelected
+                    ? (isExpired ? "#6b2630" : "#2f6fb2")
+                    : (isExpired ? (row % 2 ? "#241416" : "#201214") : (row % 2 ? "#191919" : "#171717"));
                 ctx.fillRect(rowX, rowY, rowWidth, ROW_HEIGHT);
 
-                ctx.fillStyle = isSelected ? "#fff" : "#aaa";
+                ctx.fillStyle = isSelected ? (isExpired ? "#ffe1e1" : "#fff") : (isExpired ? "#ff8a8a" : "#aaa");
                 ctx.font = "12px sans-serif";
                 ctx.fillText(String(item.index || i + 1).padStart(2, "0"), rowX + 8, rowY + 16);
 
-                ctx.fillStyle = isSelected ? "#fff" : "#ddd";
+                ctx.fillStyle = isSelected ? (isExpired ? "#ffe1e1" : "#fff") : (isExpired ? "#ff6b6b" : "#ddd");
                 ctx.fillText(clipText(ctx, item.task_id || "", idWidth), rowX + indexWidth, rowY + 16);
 
-                ctx.fillStyle = isSelected ? "#eaf4ff" : "#999";
+                ctx.fillStyle = isSelected ? (isExpired ? "#ffd0d0" : "#eaf4ff") : (isExpired ? "#d96d6d" : "#999");
                 ctx.fillText(clipText(ctx, item.status || "", statusWidth), rowX + indexWidth + idWidth + 8, rowY + 16);
                 ctx.fillText(clipText(ctx, item.details || "", detailsWidth), rowX + indexWidth + idWidth + statusWidth + 14, rowY + 16);
-                ctx.fillText(item.created_at || "", rowX + indexWidth + idWidth + statusWidth + detailsWidth + 20, rowY + 16);
+                ctx.fillText(
+                    clipText(ctx, item.created_at || "", dateWidth),
+                    rowX + indexWidth + idWidth + statusWidth + detailsWidth + 20,
+                    rowY + 16
+                );
             }
 
             if (this.items.length > visibleCount(this)) {
@@ -528,6 +670,7 @@ app.registerExtension({
         nodeType.prototype.onExecuted = function (message) {
             onExecuted?.apply(this, arguments);
             applyExecutionMessage(this, message || {});
+            applyPreviewState(this, message || {});
         };
 
         const configure = nodeType.prototype.configure;

@@ -149,6 +149,8 @@ Generation History Browser video_url -> Preview Video URL video_url
 
 BytePlus 的任务结果和输出 URL 通常只短期保留，大约 24 小时。需要长期保存请用 `Save Video`。
 
+已过期任务会以红色显示。选择已过期任务时，节点不会输出 `video_url`、`video_ref` 或 `task_json`，预览区域会显示过期标记。
+
 ## 音频参考
 
 `Omni Reference` 支持本地音频文件和音频 URL。

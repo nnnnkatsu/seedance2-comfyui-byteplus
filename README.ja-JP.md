@@ -149,6 +149,8 @@ Generation History Browser video_url -> Preview Video URL video_url
 
 BytePlus のタスク結果と出力 URL は短期間しか保持されません。通常は約 24 時間です。長期保存する場合は `Save Video` を使ってください。
 
+期限切れタスクは赤色で表示されます。期限切れタスクを選択した場合、`video_url`、`video_ref`、`task_json` は出力せず、プレビュー領域には期限切れマーカーを表示します。
+
 ## 音声参照
 
 `Omni Reference` はローカル音声ファイルと音声 URL に対応しています。

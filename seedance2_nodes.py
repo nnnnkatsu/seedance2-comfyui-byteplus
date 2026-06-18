@@ -74,6 +74,7 @@ _NONE_CHOICE = "(none)"
 _MANUAL_TASK_CHOICE = "(manual task_id)"
 TASK_HISTORY_PATH = "~/.byteplus/seedance2-comfyui-tasks.json"
 TASK_HISTORY_LIMIT = 50
+TASK_OUTPUT_TTL_SECONDS = 24 * 60 * 60
 
 def _list_input_files(extensions):
     """Return sorted list of files in ComfyUI/input/ matching the given extensions."""
@@ -121,17 +122,27 @@ def _record_task(task_id, payload_or_result):
     if not task_id:
         return
     data = payload_or_result if isinstance(payload_or_result, dict) else {}
+    history = _load_task_history()
+    existing = next((item for item in history if item.get("id") == task_id), {})
+    created_ts = 0
+    for key in ("created_at", "created", "created_time", "create_time", "createdAt", "createTime", "recorded_at"):
+        created_ts = _timestamp_from_value(data.get(key))
+        if created_ts:
+            break
+    if not created_ts:
+        created_ts = int(existing.get("created_ts") or existing.get("recorded_at") or time.time())
     record = {
         "id": task_id,
-        "recorded_at": int(time.time()),
-        "model": str(data.get("model", "")),
-        "status": str(data.get("status", "")),
-        "resolution": str(data.get("resolution", "")),
-        "ratio": str(data.get("ratio", "")),
-        "duration": data.get("duration", ""),
-        "generate_audio": data.get("generate_audio", ""),
+        "recorded_at": int(created_ts),
+        "created_ts": int(created_ts),
+        "model": str(data.get("model") or existing.get("model") or ""),
+        "status": str(data.get("status") or existing.get("status") or ""),
+        "resolution": str(data.get("resolution") or existing.get("resolution") or ""),
+        "ratio": str(data.get("ratio") or existing.get("ratio") or ""),
+        "duration": data.get("duration", existing.get("duration", "")),
+        "generate_audio": data.get("generate_audio", existing.get("generate_audio", "")),
     }
-    history = [item for item in _load_task_history() if item.get("id") != task_id]
+    history = [item for item in history if item.get("id") != task_id]
     history.insert(0, record)
     _save_task_history(history)
 
@@ -629,6 +640,16 @@ def _video_preview_ui(filename, subfolder, folder_type="output"):
     }
 
 
+def _image_preview_ui(filename, subfolder, folder_type="output"):
+    return {
+        "images": [{
+            "filename": filename,
+            "subfolder": subfolder,
+            "type": folder_type,
+        }],
+    }
+
+
 def _safe_filename(filename):
     base = os.path.basename(str(filename or "video.mp4"))
     return re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("._") or "video.mp4"
@@ -648,6 +669,39 @@ def _download_task_preview(video_url, task_id):
             for chunk in r.iter_content(8192):
                 if chunk:
                     fh.write(chunk)
+    return filename, subfolder
+
+
+def _expired_task_placeholder(task_id=""):
+    subfolder = "seedance2_task_history_previews"
+    out_dir = os.path.join(folder_paths.get_output_directory(), subfolder)
+    os.makedirs(out_dir, exist_ok=True)
+    suffix = hashlib.sha1(str(task_id or "expired").encode("utf-8")).hexdigest()[:10]
+    filename = f"task_expired_no_output_{suffix}.mp4"
+    target = os.path.join(out_dir, filename)
+    if os.path.exists(target) and os.path.getsize(target) > 0:
+        return filename, subfolder
+
+    width, height = 960, 540
+    img = Image.new("RGB", (width, height), "#1b0f12")
+    from PIL import ImageDraw, ImageFont
+    draw = ImageDraw.Draw(img)
+    draw.line((300, 130, 660, 490), fill="#ff5c5c", width=34)
+    draw.line((660, 130, 300, 490), fill="#ff5c5c", width=34)
+    text = "EXPIRED - NO OUTPUT"
+    font = ImageFont.load_default()
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_w = bbox[2] - bbox[0]
+    draw.text(((width - text_w) / 2, 62), text, fill="#ffd0d0", font=font)
+
+    import cv2
+    frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+    writer = cv2.VideoWriter(target, cv2.VideoWriter_fourcc(*"mp4v"), 12, (width, height))
+    if not writer.isOpened():
+        raise RuntimeError("Failed to create expired placeholder video.")
+    for _ in range(24):
+        writer.write(frame)
+    writer.release()
     return filename, subfolder
 
 
@@ -679,6 +733,25 @@ def _format_task_time(record):
         except Exception:
             pass
     return str(record.get("created_at") or record.get("created") or "")
+
+
+def _task_is_expired(record):
+    status = str(record.get("status") or "").strip().lower()
+    if status == "expired":
+        return True
+    timestamp = int(record.get("created_ts") or record.get("recorded_at") or 0)
+    if not timestamp:
+        return False
+    return time.time() - timestamp >= TASK_OUTPUT_TTL_SECONDS
+
+
+def _format_task_time_for_browser(record):
+    label = _format_task_time(record)
+    if _task_is_expired(record) and label:
+        return f"{label} (expired)"
+    if _task_is_expired(record):
+        return "(expired)"
+    return label
 
 
 def _task_id_from_record(record):
@@ -823,20 +896,27 @@ def _combined_task_records(api_key, source, max_items):
 
 
 def _task_browser_item(record, index, selected=False):
+    expired = _task_is_expired(record)
+    status = str(record.get("status") or "").strip()
+    if expired and not status:
+        status = "expired"
     details = " ".join(str(value) for value in (
-        record.get("status", ""),
+        status,
         record.get("resolution", ""),
         record.get("ratio", ""),
         f"{record.get('duration')}s" if record.get("duration") else "",
     ) if value)
+    if expired and "output expired" not in details.lower():
+        details = f"{details} output expired".strip()
     prompt = str(record.get("prompt") or "").strip()
     if prompt:
         details = f"{details} {prompt}".strip()
     return {
         "index": index,
         "task_id": record.get("id", ""),
-        "status": record.get("status", ""),
-        "created_at": _format_task_time(record),
+        "status": status,
+        "created_at": _format_task_time_for_browser(record),
+        "expired": expired,
         "details": details,
         "source": record.get("source", ""),
         "selected": bool(selected),
@@ -1210,12 +1290,21 @@ class Seedance2TaskHistoryBrowser:
 
         status = str(task_result.get("status") or selected.get("status") or "")
         video_url = _extract_task_video_url(task_result) or str(selected.get("video_url") or "")
+        selected["status"] = status or selected.get("status", "")
+        selected["video_url"] = video_url
+        is_selected_expired = _task_is_expired(selected)
+        if is_selected_expired:
+            video_url = ""
         video_ref = {"url": video_url} if video_url else {}
         first_frame = _first_frame(video_url) if (download_preview and video_url.startswith(("http://", "https://"))) else _blank_image()
         task_json = json.dumps(task_result or selected.get("raw") or selected, ensure_ascii=False, indent=2)
-
-        selected["status"] = status or selected.get("status", "")
-        selected["video_url"] = video_url
+        output_request_id = selected_id
+        output_status = status
+        output_task_json = task_json
+        if is_selected_expired:
+            output_request_id = ""
+            output_status = ""
+            output_task_json = ""
         items = [
             _task_browser_item(record, index, index - 1 == selected_pos)
             for index, record in enumerate(records, 1)
@@ -1228,9 +1317,10 @@ class Seedance2TaskHistoryBrowser:
                 f"{marker}{item['index']:02d} {item['task_id']}  "
                 f"{item['status'] or '(unknown)'}  {item['created_at']}  {item['details']}"
             )
+        selected_status_label = status or ("expired" if is_selected_expired else "(unknown)")
         selected_line = (
             f"Selected {selected_pos + 1:02d}: {selected_id}  "
-            f"{status or '(unknown)'}  {_format_task_time(selected)}"
+            f"{selected_status_label}  {_format_task_time_for_browser(selected)}"
         )
         text_parts = [selected_line]
         if errors:
@@ -1239,6 +1329,9 @@ class Seedance2TaskHistoryBrowser:
             text_parts.append(retrieve_error)
         if video_url:
             text_parts.append(f"video_url: {video_url}")
+        elif is_selected_expired:
+            text_parts.append("ALERT: EXPIRED - NO OUTPUT. BytePlus has removed the generated video for this task.")
+            text_parts.append("video_url: (expired; output disabled)")
         else:
             text_parts.append("video_url: (none; task may still be running, failed, or expired)")
         text_parts.append("\n".join(lines))
@@ -1248,6 +1341,7 @@ class Seedance2TaskHistoryBrowser:
             "task_items_json": [json.dumps(items, ensure_ascii=False)],
             "selected_task_id": [selected_id],
             "selected_index": [str(selected_pos + 1)],
+            "task_preview_expired": [selected_id if is_selected_expired else ""],
         }
         if download_preview and video_url.startswith(("http://", "https://")):
             try:
@@ -1258,7 +1352,7 @@ class Seedance2TaskHistoryBrowser:
 
         return {
             "ui": ui,
-            "result": (video_url, video_ref, first_frame, selected_id, status, task_json),
+            "result": (video_url, video_ref, first_frame, output_request_id, output_status, output_task_json),
         }
 
 
