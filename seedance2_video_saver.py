@@ -75,9 +75,12 @@ class Seedance2VideoSaver:
             "save_subfolder": ("STRING", {"default": "seedance2"}),
             "filename_prefix": ("STRING", {"default": "seedance2"}),
         }, "optional": {
-            "frame_load_cap": ("INT", {"default": 0, "min": 0, "max": 9999}),
+            "frame_load_cap": ("INT", {"default": 1, "min": 0, "max": 9999,
+                "tooltip": "When load_frames is enabled, 0 loads all frames; otherwise cap the number of frames."}),
             "skip_first_frames": ("INT", {"default": 0, "min": 0, "max": 500}),
             "select_every_nth": ("INT", {"default": 1, "min": 1, "max": 30}),
+            "load_frames": ("BOOLEAN", {"default": False,
+                "tooltip": "Load saved video frames into the IMAGE output. Off is safer for 1080p/4k videos."}),
         }}
     RETURN_TYPES = ("IMAGE", "STRING", "INT")
     RETURN_NAMES = ("frames", "filepath", "frame_count")
@@ -86,7 +89,7 @@ class Seedance2VideoSaver:
     OUTPUT_NODE = True
 
     def run(self, video_url, save_subfolder, filename_prefix,
-            frame_load_cap=0, skip_first_frames=0, select_every_nth=1):
+            frame_load_cap=1, skip_first_frames=0, select_every_nth=1, load_frames=False):
         if not video_url or not video_url.strip().startswith("http"):
             return self._err("Invalid URL")
         out_dir = os.path.join(folder_paths.get_output_directory(), save_subfolder)
@@ -103,7 +106,10 @@ class Seedance2VideoSaver:
             with open(fp, "wb") as fh:
                 for chunk in r.iter_content(8192):
                     if chunk: fh.write(chunk)
-            frames, count = self._load(fp, frame_load_cap, skip_first_frames, select_every_nth)
+            if load_frames:
+                frames, count = self._load(fp, frame_load_cap, skip_first_frames, select_every_nth)
+            else:
+                frames, count = __import__("torch").zeros(1, 64, 64, 3), 0
             fname = os.path.basename(fp)
             print(f"[Seedance2 Saver] Saved {fname} — {count} frames")
             return {"ui": _video_preview_ui(fname, save_subfolder), "result": (frames, fp, count)}

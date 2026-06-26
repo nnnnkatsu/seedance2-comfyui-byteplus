@@ -510,6 +510,44 @@ def _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generat
     }
 
 
+def _log_url_summary(url):
+    value = str(url or "")
+    if value.startswith("data:"):
+        head = value.split(",", 1)[0]
+        return f"{head},<data {len(value)} chars>"
+    if "?" in value:
+        value = value.split("?", 1)[0] + "?<redacted>"
+    return value if len(value) <= 180 else value[:177] + "..."
+
+
+def _payload_log_summary(payload):
+    summary = {
+        key: payload.get(key)
+        for key in ("model", "resolution", "ratio", "duration", "seed", "generate_audio", "watermark")
+        if key in payload
+    }
+    content_summary = []
+    for item in payload.get("content") or []:
+        if not isinstance(item, dict):
+            content_summary.append({"type": type(item).__name__})
+            continue
+        item_type = item.get("type")
+        role = item.get("role", "")
+        entry = {"type": item_type}
+        if role:
+            entry["role"] = role
+        if item_type == "text":
+            text = str(item.get("text") or "")
+            entry["text"] = text[:160] + ("..." if len(text) > 160 else "")
+            entry["text_len"] = len(text)
+        elif item_type in ("image_url", "video_url", "audio_url"):
+            url = (item.get(item_type) or {}).get("url", "")
+            entry["url"] = _log_url_summary(url)
+        content_summary.append(entry)
+    summary["content"] = content_summary
+    return summary
+
+
 def _submit(api_key, endpoint, payload):
     payload = dict(payload)
     payload["model"] = _load_endpoint(endpoint or payload.get("model", ""))
@@ -702,7 +740,7 @@ def _run_batch_generation(api_key, endpoint, payload, seed, batch_count, label):
         raise RuntimeError(f"[Seedance2 {label}] No successful batch outputs.\n{batch_json}")
     url = str(primary.get("video_url") or "")
     request_id = str(primary.get("request_id") or "")
-    print(f"[Seedance2 {label}] Primary result -> {url}")
+    print(f"[Seedance2 {label}] Primary result -> {_log_url_summary(url)}")
     return url, _first_frame(url), request_id, batch_json
 
 
@@ -1518,8 +1556,6 @@ class Seedance2BatchResultBrowser:
             "selected_index": ("INT", {"default": 1, "min": 1, "max": BATCH_MAX_COUNT, "step": 1}),
             "selected_request_id": ("STRING", {"multiline": False, "default": "",
                 "tooltip": "Stable request_id selected by the batch list."}),
-            "download_preview": ("BOOLEAN", {"default": True,
-                "tooltip": "Download the selected video URL for inline preview."}),
         }}
 
     RETURN_TYPES = ("STRING", VIDEO_REF_TYPE, "IMAGE", "STRING", "STRING", "STRING")
@@ -1528,7 +1564,7 @@ class Seedance2BatchResultBrowser:
     CATEGORY = "🌱 Seedance 2.0"
     OUTPUT_NODE = True
 
-    def run(self, batch_json, selected_index, selected_request_id, download_preview):
+    def run(self, batch_json, selected_index, selected_request_id):
         if not str(batch_json or "").strip():
             return {
                 "ui": {
@@ -1536,7 +1572,6 @@ class Seedance2BatchResultBrowser:
                     "batch_items_json": ["[]"],
                     "selected_request_id": [""],
                     "selected_index": [""],
-                    "batch_preview_no_output": ["no-batch"],
                 },
                 "result": ("", {}, _blank_image(), "", "", "{}"),
             }
@@ -1549,7 +1584,6 @@ class Seedance2BatchResultBrowser:
                     "batch_items_json": ["[]"],
                     "selected_request_id": [""],
                     "selected_index": [""],
-                    "batch_preview_no_output": ["empty"],
                 },
                 "result": ("", {}, _blank_image(), "", "", "{}"),
             }
@@ -1562,14 +1596,17 @@ class Seedance2BatchResultBrowser:
                     selected_pos = pos
                     break
         if selected_pos is None:
-            selected_pos = max(1, min(int(selected_index), len(raw_items))) - 1
+            selected_pos = next(
+                (pos for pos, item in enumerate(raw_items) if str(item.get("video_url") or "")),
+                0,
+            )
 
         selected = raw_items[selected_pos]
         request_id = str(selected.get("request_id") or "")
         status = str(selected.get("status") or "")
         video_url = str(selected.get("video_url") or "")
         video_ref = {"url": video_url} if video_url else {}
-        first_frame = _first_frame(video_url) if (download_preview and video_url.startswith(("http://", "https://"))) else _blank_image()
+        first_frame = _blank_image()
         item_json = json.dumps(selected, ensure_ascii=False, indent=2)
 
         items = [
@@ -1598,14 +1635,7 @@ class Seedance2BatchResultBrowser:
             "batch_items_json": [json.dumps(items, ensure_ascii=False)],
             "selected_request_id": [request_id],
             "selected_index": [str(selected_pos + 1)],
-            "batch_preview_no_output": ["" if video_url else (request_id or f"batch-{selected_pos + 1}")],
         }
-        if download_preview and video_url.startswith(("http://", "https://")):
-            try:
-                filename, subfolder = _download_task_preview(video_url, request_id or f"batch-{selected_pos + 1}")
-                ui.update(_video_preview_ui(filename, subfolder))
-            except Exception as e:
-                ui["text"] = [ui["text"][0] + f"\n\nPreview download failed: {e}"]
 
         return {
             "ui": ui,
@@ -1799,7 +1829,7 @@ class Seedance2Omni:
 
         payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, seed, content_tail)
 
-        print(f"[Seedance2 Omni] PAYLOAD: {payload}")
+        print(f"[Seedance2 Omni] PAYLOAD: {_payload_log_summary(payload)}")
         print(f"[Seedance2 Omni] Submitting "
               f"({len(images_list)} image(s), {len(video_files)} video(s), {len(audio_files)} audio(s))...")
         url, first_frame, rid, batch_json = _run_batch_generation(api_key, endpoint, payload, seed, batch_count, "Omni")

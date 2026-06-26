@@ -207,16 +207,9 @@ function showNoOutputPreview(node, reason) {
     markDirty(node);
 }
 
-function applyPreviewState(node, message) {
-    const reason = messageValue(message, "batch_preview_no_output");
-    if (reason === null) {
-        return;
-    }
-    if (reason) {
-        showNoOutputPreview(node, reason);
-    } else {
-        removeNoOutputPreview(node);
-    }
+function clearBrowserPreview(node) {
+    clearNativePreview(node);
+    removeNoOutputPreview(node);
 }
 
 function ensureListWidget(node) {
@@ -295,17 +288,17 @@ function ensureListWidget(node) {
                 ctx.font = "12px sans-serif";
                 ctx.fillStyle = isSelected ? "#fff" : (isFailed ? "#ff8a8a" : "#aaa");
                 ctx.fillText(String(item.index || i + 1).padStart(2, "0"), rowX + 8, rowY + 16);
-                ctx.fillText(clipText(String(item.seed ?? ""), seedWidth), rowX + indexWidth, rowY + 16);
+                ctx.fillText(clipText(ctx, String(item.seed ?? ""), seedWidth), rowX + indexWidth, rowY + 16);
 
                 ctx.fillStyle = isSelected ? "#eaf4ff" : (isFailed ? "#d96d6d" : "#999");
-                ctx.fillText(clipText(item.status || "", statusWidth), rowX + indexWidth + seedWidth, rowY + 16);
+                ctx.fillText(clipText(ctx, item.status || "", statusWidth), rowX + indexWidth + seedWidth, rowY + 16);
 
                 ctx.fillStyle = isSelected ? "#fff" : (isFailed ? "#ff6b6b" : "#ddd");
-                ctx.fillText(clipText(item.request_id || "", idWidth), rowX + indexWidth + seedWidth + statusWidth + 8, rowY + 16);
+                ctx.fillText(clipText(ctx, item.request_id || "", idWidth), rowX + indexWidth + seedWidth + statusWidth + 8, rowY + 16);
 
                 ctx.fillStyle = isSelected ? "#eaf4ff" : (isFailed ? "#d96d6d" : "#999");
                 ctx.fillText(
-                    clipText(item.details || "", detailsWidth),
+                    clipText(ctx, item.details || "", detailsWidth),
                     rowX + indexWidth + seedWidth + statusWidth + idWidth + 16,
                     rowY + 16
                 );
@@ -378,7 +371,7 @@ app.registerExtension({
         nodeType.prototype.onExecuted = function (message) {
             onExecuted?.apply(this, arguments);
             applyExecutionMessage(this, message || {});
-            applyPreviewState(this, message || {});
+            clearBrowserPreview(this);
         };
 
         const configure = nodeType.prototype.configure;
