@@ -6,6 +6,7 @@ const TARGET_NODE_CLASSES = new Set([
     "Seedance2VideoPreview",
     "Seedance2VideoSaver",
     "Seedance2TaskHistoryBrowser",
+    "Seedance2BatchResultBrowser",
 ]);
 
 const PREVIEW_MIN_WIDTH_CAP = 180;

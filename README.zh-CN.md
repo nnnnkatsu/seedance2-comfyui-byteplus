@@ -10,7 +10,7 @@
 
 - 直接使用 BytePlus ModelArk API。
 - 使用 `endpoint` 字段填写 BytePlus 的 `ep-...` endpoint ID。API 请求里它会被写入官方字段 `model`。
-- 增加 `resolution`: `480p`、`720p`、`1080p`。
+- 增加 `resolution`: `480p`、`720p`、`1080p`、`4k`。
 - 增加 `seed`。
 - `watermark` 固定为 `false`，不显示在 UI 里。
 - 增加 S3 上传、浏览、预览、删除辅助节点。

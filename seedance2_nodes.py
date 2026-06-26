@@ -12,7 +12,7 @@ Focused nodes for Seedance 2.0 video generation via BytePlus ModelArk.
   Seedance2ConsistentVideo    - ModelArk reference_image task
 
 Reference image workflow:
-  LoadImage → Seedance2ConsistentVideo
+  LoadImage -> Seedance2ConsistentVideo
 
 Auth:     Authorization: Bearer header
 Create:   POST /api/v3/contents/generations/tasks
@@ -24,6 +24,7 @@ import hashlib
 import io
 import json
 import os
+import random
 import re
 import time
 from datetime import datetime
@@ -60,7 +61,7 @@ ENDPOINT_ENV_VARS = (
     "ARK_MODEL",
 )
 BASE_URL_ENV_VARS = ("BYTEPLUS_ARK_BASE_URL", "ARK_BASE_URL")
-RESOLUTION_OPTIONS = ["480p", "720p", "1080p"]
+RESOLUTION_OPTIONS = ["480p", "720p", "1080p", "4k"]
 DEFAULT_RESOLUTION = "480p"
 VIDEO_REF_TYPE = "SEEDANCE2_VIDEO_REF"
 QUALITY_TO_RESOLUTION = {
@@ -75,6 +76,7 @@ _MANUAL_TASK_CHOICE = "(manual task_id)"
 TASK_HISTORY_PATH = "~/.byteplus/seedance2-comfyui-tasks.json"
 TASK_HISTORY_LIMIT = 50
 TASK_OUTPUT_TTL_SECONDS = 24 * 60 * 60
+BATCH_MAX_COUNT = 10
 
 def _list_input_files(extensions):
     """Return sorted list of files in ComfyUI/input/ matching the given extensions."""
@@ -276,7 +278,7 @@ def _task_id_from_choice(choice):
 def _blank_image():
     return torch.zeros(1, 64, 64, 3)
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# -- Helpers ------------------------------------------------------------------
 
 def _read_config():
     for config_path in CONFIG_PATHS:
@@ -392,8 +394,8 @@ def _upload_image(api_key, image_tensor):
 
 # Resolve a user-supplied media reference to a URL.
 # Rules:
-#   - empty / whitespace   → None
-#   - starts with http(s)  → returned as-is (already a URL)
+#   - empty / whitespace   -> None
+#   - starts with http(s)  -> returned as-is (already a URL)
 #   - local audio file     -> converted to data URL
 #   - local video file     -> error; use public URL or asset:// ID
 def _path_from_input(ref):
@@ -550,6 +552,160 @@ def _poll(api_key, request_id):
         time.sleep(POLL_INTERVAL)
     raise RuntimeError(f"Timeout: {request_id}")
 
+
+def _normalize_batch_count(batch_count):
+    try:
+        count = int(batch_count)
+    except Exception:
+        count = 1
+    return max(1, min(count, BATCH_MAX_COUNT))
+
+
+def _batch_seed(seed, offset):
+    seed = int(seed)
+    if seed < 0:
+        return random.SystemRandom().randint(0, SEED_MAX)
+    return (seed + int(offset)) % (SEED_MAX + 1)
+
+
+def _batch_prompt_from_payload(payload):
+    for item in payload.get("content") or []:
+        if isinstance(item, dict) and item.get("type") == "text":
+            return str(item.get("text") or "")
+    return ""
+
+
+def _batch_item(index, seed, request_id="", status="", video_url="", error="", result=None):
+    return {
+        "index": int(index),
+        "seed": int(seed),
+        "request_id": str(request_id or ""),
+        "status": str(status or ""),
+        "video_url": str(video_url or ""),
+        "error": str(error or ""),
+        "created_ts": int(time.time()),
+        "raw": result if isinstance(result, dict) else {},
+    }
+
+
+def _batch_summary(label, payload, items):
+    return {
+        "type": "seedance2_batch",
+        "version": 1,
+        "label": str(label or ""),
+        "created_ts": int(time.time()),
+        "model": str(payload.get("model") or ""),
+        "prompt": _batch_prompt_from_payload(payload),
+        "resolution": str(payload.get("resolution") or ""),
+        "ratio": str(payload.get("ratio") or ""),
+        "duration": payload.get("duration", ""),
+        "generate_audio": bool(payload.get("generate_audio", False)),
+        "count": len(items),
+        "items": items,
+    }
+
+
+def _batch_items_from_json(batch_json):
+    data = _parse_json_object(batch_json, "batch_json")
+    items = data.get("items", [])
+    if not isinstance(items, list):
+        raise ValueError("batch_json.items must be a list.")
+    return data, [item for item in items if isinstance(item, dict)]
+
+
+def _batch_browser_item(item, index, selected=False):
+    status = str(item.get("status") or "").strip()
+    seed = item.get("seed", "")
+    details = " ".join(str(value) for value in (
+        f"seed {seed}" if seed != "" else "",
+        item.get("error", ""),
+    ) if value)
+    return {
+        "index": index,
+        "request_id": str(item.get("request_id") or ""),
+        "seed": seed,
+        "status": status,
+        "video_url": str(item.get("video_url") or ""),
+        "details": details,
+        "selected": bool(selected),
+    }
+
+
+def _submit_and_poll_batch(api_key, endpoint, payload, seed, batch_count, label):
+    count = _normalize_batch_count(batch_count)
+    items = []
+    pending = []
+
+    for index in range(1, count + 1):
+        item_seed = _batch_seed(seed, index - 1)
+        item_payload = dict(payload)
+        item_payload["seed"] = item_seed
+        try:
+            print(f"[Seedance2 {label}] Submitting batch {index}/{count} seed={item_seed}...")
+            request_id = _submit(api_key, endpoint, item_payload)
+            item = _batch_item(index, item_seed, request_id=request_id, status="submitted")
+            items.append(item)
+            pending.append(item)
+        except Exception as e:
+            items.append(_batch_item(index, item_seed, status="failed", error=str(e)))
+
+    if not any(item.get("request_id") for item in items):
+        raise RuntimeError(f"[Seedance2 {label}] All batch submissions failed: {items}")
+
+    deadline = time.time() + MAX_WAIT
+    while pending and time.time() < deadline:
+        for item in list(pending):
+            request_id = item.get("request_id")
+            if not request_id:
+                pending.remove(item)
+                continue
+            try:
+                result = _retrieve_task(api_key, request_id)
+                status = str(result.get("status") or "")
+                item["status"] = status
+                item["raw"] = result
+                _record_task(request_id, result)
+                print(f"[Seedance2 {label}] {status} batch {item['index']}/{count} {request_id}")
+                if status == "succeeded":
+                    item["video_url"] = _output_url(result)
+                    pending.remove(item)
+                elif status in ("failed", "expired", "cancelled"):
+                    error = result.get("error") or status
+                    item["error"] = json.dumps(error, ensure_ascii=False) if isinstance(error, dict) else str(error)
+                    pending.remove(item)
+            except Exception as e:
+                item["status"] = "failed"
+                item["error"] = str(e)
+                pending.remove(item)
+        if pending:
+            time.sleep(POLL_INTERVAL)
+
+    for item in pending:
+        item["status"] = "timeout"
+        item["error"] = f"Timeout after {MAX_WAIT} seconds"
+
+    return items
+
+
+def _primary_success(items):
+    for item in items:
+        if item.get("status") == "succeeded" and item.get("video_url"):
+            return item
+    return None
+
+
+def _run_batch_generation(api_key, endpoint, payload, seed, batch_count, label):
+    items = _submit_and_poll_batch(api_key, endpoint, payload, seed, batch_count, label)
+    primary = _primary_success(items)
+    batch_json = json.dumps(_batch_summary(label, payload, items), ensure_ascii=False, indent=2)
+    if not primary:
+        raise RuntimeError(f"[Seedance2 {label}] No successful batch outputs.\n{batch_json}")
+    url = str(primary.get("video_url") or "")
+    request_id = str(primary.get("request_id") or "")
+    print(f"[Seedance2 {label}] Primary result -> {url}")
+    return url, _first_frame(url), request_id, batch_json
+
+
 def _output_url(result):
     content = result.get("content") or {}
     if isinstance(content, dict) and content.get("video_url"):
@@ -582,9 +738,9 @@ def _download_image(url):
     return torch.from_numpy(arr).unsqueeze(0)
 
 def _check_legacy_unused(resp):
-    if resp.status_code == 401: raise RuntimeError("Auth failed — check API key.")
-    if resp.status_code == 402: raise RuntimeError("Insufficient credits — top up at muapi.ai")
-    if resp.status_code == 429: raise RuntimeError("Rate limited — retry later.")
+    if resp.status_code == 401: raise RuntimeError("Auth failed - check API key.")
+    if resp.status_code == 402: raise RuntimeError("Insufficient credits - top up at muapi.ai")
+    if resp.status_code == 429: raise RuntimeError("Rate limited - retry later.")
     if not resp.ok:
         print(f"[Seedance2] API ERROR {resp.status_code}: {resp.text[:500]}")
         try:
@@ -922,14 +1078,14 @@ def _task_browser_item(record, index, selected=False):
         "selected": bool(selected),
     }
 
-# ── Nodes ──────────────────────────────────────────────────────────────────────
+# -- Nodes --------------------------------------------------------------------
 
 class Seedance2TextToVideo:
     """
     Seedance 2.0 Text-to-Video
     ---------------------------
     Generate video purely from a text prompt.
-    Resolutions: 480p | 720p | 1080p
+    Resolutions: 480p | 720p | 1080p | 4k
     Aspect ratios: 16:9 | 9:16 | 4:3 | 3:4
     Duration: 5 | 10 | 15 seconds
     """
@@ -940,29 +1096,27 @@ class Seedance2TextToVideo:
                 "default": "A cinematic aerial shot of a futuristic city at dusk, volumetric lighting, 4K"}),
             "aspect_ratio": (["16:9", "9:16", "4:3", "3:4"], {"default": "16:9"}),
             "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
-                "tooltip": "BytePlus output resolution. 1080p is not supported by Seedance 2.0 Fast endpoints."}),
+                "tooltip": "BytePlus output resolution. 1080p/4k availability depends on the selected endpoint."}),
             "duration": ([5, 10, 15], {"default": 5}),
             "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
+            "batch_count": ("INT", {"default": 1, "min": 1, "max": BATCH_MAX_COUNT, "step": 1,
+                "tooltip": "Create multiple tasks with different seeds. Cost and wait time scale with this count."}),
         }, "optional": {
             "api_key": ("STRING", {"multiline": False, "default": ""}),
             "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
                 "tooltip": "BytePlus ModelArk endpoint ID, for example ep-..."}),
             "generate_audio": ("BOOLEAN", {"default": True}),
         }}
-    RETURN_TYPES = ("STRING", "IMAGE", "STRING")
-    RETURN_NAMES = ("video_url", "first_frame", "request_id")
+    RETURN_TYPES = ("STRING", "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "first_frame", "request_id", "batch_json")
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, prompt, aspect_ratio, resolution, duration, seed, api_key="", endpoint="", generate_audio=True):
+    def run(self, prompt, aspect_ratio, resolution, duration, seed, batch_count=1,
+            api_key="", endpoint="", generate_audio=True):
         api_key = _load_api_key(api_key)
         payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, seed)
-        print("[Seedance2 T2V] Submitting...")
-        rid = _submit(api_key, endpoint, payload)
-        result = _poll(api_key, rid)
-        url = _output_url(result)
-        print(f"[Seedance2 T2V] Done → {url}")
-        return (url, _first_frame(url), rid)
+        return _run_batch_generation(api_key, endpoint, payload, seed, batch_count, "T2V")
 
 
 class Seedance2ImageToVideo:
@@ -970,7 +1124,7 @@ class Seedance2ImageToVideo:
     Seedance 2.0 Image-to-Video
     ----------------------------
     Connect up to 9 reference images. Reference them in the prompt
-    using @image1 … @image9.
+    using @image1 ... @image9.
 
     Example: "The cat in @image1 walks through a sunlit garden."
     """
@@ -981,9 +1135,11 @@ class Seedance2ImageToVideo:
                 "default": "The character in @image1 walks through a beautiful garden, cinematic motion"}),
             "aspect_ratio": (["16:9", "9:16", "4:3", "3:4"], {"default": "16:9"}),
             "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
-                "tooltip": "BytePlus output resolution. 1080p is not supported by Seedance 2.0 Fast endpoints."}),
+                "tooltip": "BytePlus output resolution. 1080p/4k availability depends on the selected endpoint."}),
             "duration": ([5, 10, 15], {"default": 5}),
             "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
+            "batch_count": ("INT", {"default": 1, "min": 1, "max": BATCH_MAX_COUNT, "step": 1,
+                "tooltip": "Create multiple tasks with different seeds. Cost and wait time scale with this count."}),
         }, "optional": {
             "api_key": ("STRING", {"multiline": False, "default": ""}),
             "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
@@ -993,12 +1149,13 @@ class Seedance2ImageToVideo:
             "image_4": ("IMAGE",), "image_5": ("IMAGE",), "image_6": ("IMAGE",),
             "image_7": ("IMAGE",), "image_8": ("IMAGE",), "image_9": ("IMAGE",),
         }}
-    RETURN_TYPES = ("STRING", "IMAGE", "STRING")
-    RETURN_NAMES = ("video_url", "first_frame", "request_id")
+    RETURN_TYPES = ("STRING", "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "first_frame", "request_id", "batch_json")
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, prompt, aspect_ratio, resolution, duration, seed, api_key="", endpoint="", generate_audio=True,
+    def run(self, prompt, aspect_ratio, resolution, duration, seed, batch_count=1,
+            api_key="", endpoint="", generate_audio=True,
             image_1=None, image_2=None, image_3=None, image_4=None, image_5=None,
             image_6=None, image_7=None, image_8=None, image_9=None):
         api_key = _load_api_key(api_key)
@@ -1013,12 +1170,7 @@ class Seedance2ImageToVideo:
             raise ValueError("At least one image required.")
         content_tail = [_content_image(url, "reference_image") for url in images_list]
         payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, seed, content_tail)
-        print(f"[Seedance2 I2V] Submitting ({len(images_list)} image(s))...")
-        rid = _submit(api_key, endpoint, payload)
-        result = _poll(api_key, rid)
-        url = _output_url(result)
-        print(f"[Seedance2 I2V] Done → {url}")
-        return (url, _first_frame(url), rid)
+        return _run_batch_generation(api_key, endpoint, payload, seed, batch_count, "I2V")
 
 
 class Seedance2FirstLastFrameToVideo:
@@ -1038,9 +1190,11 @@ class Seedance2FirstLastFrameToVideo:
             "aspect_ratio": (["adaptive", "16:9", "9:16", "4:3", "3:4", "1:1", "21:9"], {"default": "adaptive",
                 "tooltip": "Use adaptive to follow the first frame aspect ratio."}),
             "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
-                "tooltip": "BytePlus output resolution. 1080p is not supported by Seedance 2.0 Fast endpoints."}),
+                "tooltip": "BytePlus output resolution. 1080p/4k availability depends on the selected endpoint."}),
             "duration": ("INT", {"default": 5, "min": 4, "max": 15, "step": 1}),
             "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
+            "batch_count": ("INT", {"default": 1, "min": 1, "max": BATCH_MAX_COUNT, "step": 1,
+                "tooltip": "Create multiple tasks with different seeds. Cost and wait time scale with this count."}),
         }, "optional": {
             "api_key": ("STRING", {"multiline": False, "default": ""}),
             "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
@@ -1048,12 +1202,12 @@ class Seedance2FirstLastFrameToVideo:
             "generate_audio": ("BOOLEAN", {"default": True}),
             "last_frame_image": ("IMAGE",),
         }}
-    RETURN_TYPES = ("STRING", "IMAGE", "STRING")
-    RETURN_NAMES = ("video_url", "first_frame", "request_id")
+    RETURN_TYPES = ("STRING", "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "first_frame", "request_id", "batch_json")
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, first_frame_image, prompt, aspect_ratio, resolution, duration, seed,
+    def run(self, first_frame_image, prompt, aspect_ratio, resolution, duration, seed, batch_count=1,
             api_key="", endpoint="", generate_audio=True, last_frame_image=None):
         api_key = _load_api_key(api_key)
         print("[Seedance2 Frame] Encoding first frame...")
@@ -1063,12 +1217,7 @@ class Seedance2FirstLastFrameToVideo:
             content_tail.append(_content_image(_upload_image(api_key, last_frame_image), "last_frame"))
 
         payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, seed, content_tail)
-        print(f"[Seedance2 Frame] Submitting ({len(content_tail)} frame image(s))...")
-        rid = _submit(api_key, endpoint, payload)
-        result = _poll(api_key, rid)
-        url = _output_url(result)
-        print(f"[Seedance2 Frame] Done → {url}")
-        return (url, _first_frame(url), rid)
+        return _run_batch_generation(api_key, endpoint, payload, seed, batch_count, "FirstLastFrame")
 
 
 class Seedance2Extend:
@@ -1086,9 +1235,11 @@ class Seedance2Extend:
             "request_id": ("STRING", {"multiline": False, "default": "",
                 "tooltip": "request_id from a completed Seedance 2.0 generation"}),
             "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
-                "tooltip": "BytePlus output resolution. 1080p is not supported by Seedance 2.0 Fast endpoints."}),
+                "tooltip": "BytePlus output resolution. 1080p/4k availability depends on the selected endpoint."}),
             "duration": ([5, 10, 15], {"default": 5}),
             "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
+            "batch_count": ("INT", {"default": 1, "min": 1, "max": BATCH_MAX_COUNT, "step": 1,
+                "tooltip": "Create multiple extension tasks with different seeds. Cost and wait time scale with this count."}),
         }, "optional": {
             "api_key": ("STRING", {"multiline": False, "default": ""}),
             "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
@@ -1097,12 +1248,13 @@ class Seedance2Extend:
             "prompt": ("STRING", {"multiline": True, "default": "",
                 "tooltip": "Optional continuation prompt"}),
         }}
-    RETURN_TYPES = ("STRING", "IMAGE", "STRING")
-    RETURN_NAMES = ("video_url", "first_frame", "new_request_id")
+    RETURN_TYPES = ("STRING", "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "first_frame", "new_request_id", "batch_json")
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, request_id, resolution, duration, seed, api_key="", endpoint="", generate_audio=True, prompt=""):
+    def run(self, request_id, resolution, duration, seed, batch_count=1,
+            api_key="", endpoint="", generate_audio=True, prompt=""):
         api_key = _load_api_key(api_key)
         if not request_id.strip(): raise ValueError("request_id required.")
         source = request_id.strip()
@@ -1117,18 +1269,13 @@ class Seedance2Extend:
         extend_prompt = prompt.strip() or "Continue the reference video naturally."
         content_tail = [_content_video(source_url, "reference_video")]
         payload = _build_payload(endpoint, extend_prompt, "adaptive", resolution, duration, generate_audio, seed, content_tail)
-        print(f"[Seedance2 Extend] Submitting extension from {source}...")
-        new_id = _submit(api_key, endpoint, payload)
-        result = _poll(api_key, new_id)
-        url = _output_url(result)
-        print(f"[Seedance2 Extend] Done → {url}")
-        return (url, _first_frame(url), new_id)
+        return _run_batch_generation(api_key, endpoint, payload, seed, batch_count, "Extend")
 
 
 class Seedance2ApiKey:
     """
     Store your BytePlus ModelArk API key once and wire it to any Seedance 2.0 node.
-    Leave all node api_key fields empty — they auto-read from this node
+    Leave all node api_key fields empty - they auto-read from this node
     Blank api_key fields can also read ARK_API_KEY or ~/.byteplus/seedance2-comfyui.json.
     """
     @classmethod
@@ -1244,7 +1391,7 @@ class Seedance2TaskHistoryBrowser:
     RETURN_TYPES = ("STRING", VIDEO_REF_TYPE, "IMAGE", "STRING", "STRING", "STRING")
     RETURN_NAMES = ("video_url", "video_ref", "first_frame", "request_id", "status", "task_json")
     FUNCTION = "run"
-    CATEGORY = "験 Seedance 2.0"
+    CATEGORY = "🌱 Seedance 2.0"
     OUTPUT_NODE = True
 
     def run(self, source, selected_index, max_items, selected_task_id, download_preview, api_key=""):
@@ -1356,6 +1503,116 @@ class Seedance2TaskHistoryBrowser:
         }
 
 
+class Seedance2BatchResultBrowser:
+    """
+    Browse one batch_json output from a generation node.
+
+    This node selects one result from a completed batch without re-running the
+    generation node. It outputs the selected video_url and video_ref for reuse.
+    """
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "batch_json": ("STRING", {"multiline": True, "default": "",
+                "tooltip": "batch_json output from a Seedance generation node."}),
+            "selected_index": ("INT", {"default": 1, "min": 1, "max": BATCH_MAX_COUNT, "step": 1}),
+            "selected_request_id": ("STRING", {"multiline": False, "default": "",
+                "tooltip": "Stable request_id selected by the batch list."}),
+            "download_preview": ("BOOLEAN", {"default": True,
+                "tooltip": "Download the selected video URL for inline preview."}),
+        }}
+
+    RETURN_TYPES = ("STRING", VIDEO_REF_TYPE, "IMAGE", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "video_ref", "first_frame", "request_id", "status", "batch_item_json")
+    FUNCTION = "run"
+    CATEGORY = "🌱 Seedance 2.0"
+    OUTPUT_NODE = True
+
+    def run(self, batch_json, selected_index, selected_request_id, download_preview):
+        if not str(batch_json or "").strip():
+            return {
+                "ui": {
+                    "text": ["No batch_json provided."],
+                    "batch_items_json": ["[]"],
+                    "selected_request_id": [""],
+                    "selected_index": [""],
+                    "batch_preview_no_output": ["no-batch"],
+                },
+                "result": ("", {}, _blank_image(), "", "", "{}"),
+            }
+
+        batch, raw_items = _batch_items_from_json(batch_json)
+        if not raw_items:
+            return {
+                "ui": {
+                    "text": ["batch_json contains no items."],
+                    "batch_items_json": ["[]"],
+                    "selected_request_id": [""],
+                    "selected_index": [""],
+                    "batch_preview_no_output": ["empty"],
+                },
+                "result": ("", {}, _blank_image(), "", "", "{}"),
+            }
+
+        selected_id = str(selected_request_id or "").strip()
+        selected_pos = None
+        if selected_id:
+            for pos, item in enumerate(raw_items):
+                if str(item.get("request_id") or "") == selected_id:
+                    selected_pos = pos
+                    break
+        if selected_pos is None:
+            selected_pos = max(1, min(int(selected_index), len(raw_items))) - 1
+
+        selected = raw_items[selected_pos]
+        request_id = str(selected.get("request_id") or "")
+        status = str(selected.get("status") or "")
+        video_url = str(selected.get("video_url") or "")
+        video_ref = {"url": video_url} if video_url else {}
+        first_frame = _first_frame(video_url) if (download_preview and video_url.startswith(("http://", "https://"))) else _blank_image()
+        item_json = json.dumps(selected, ensure_ascii=False, indent=2)
+
+        items = [
+            _batch_browser_item(item, index, index - 1 == selected_pos)
+            for index, item in enumerate(raw_items, 1)
+        ]
+        lines = []
+        for item in items:
+            marker = "*" if item["selected"] else " "
+            lines.append(
+                f"{marker}{item['index']:02d} {item['request_id'] or '(no id)'}  "
+                f"{item['status'] or '(unknown)'}  seed {item['seed']}  {item['details']}"
+            )
+        text_parts = [
+            f"Batch: {batch.get('label', '')}  {len(raw_items)} item(s)",
+            f"Selected {selected_pos + 1:02d}: {request_id or '(no id)'}  {status or '(unknown)'}  seed {selected.get('seed', '')}",
+        ]
+        if video_url:
+            text_parts.append(f"video_url: {video_url}")
+        else:
+            text_parts.append("video_url: (none; selected batch item failed, timed out, or has no output)")
+        text_parts.append("\n".join(lines))
+
+        ui = {
+            "text": ["\n\n".join(part for part in text_parts if part)],
+            "batch_items_json": [json.dumps(items, ensure_ascii=False)],
+            "selected_request_id": [request_id],
+            "selected_index": [str(selected_pos + 1)],
+            "batch_preview_no_output": ["" if video_url else (request_id or f"batch-{selected_pos + 1}")],
+        }
+        if download_preview and video_url.startswith(("http://", "https://")):
+            try:
+                filename, subfolder = _download_task_preview(video_url, request_id or f"batch-{selected_pos + 1}")
+                ui.update(_video_preview_ui(filename, subfolder))
+            except Exception as e:
+                ui["text"] = [ui["text"][0] + f"\n\nPreview download failed: {e}"]
+
+        return {
+            "ui": ui,
+            "result": (video_url, video_ref, first_frame, request_id, status, item_json),
+        }
+
+
 class Seedance2VideoReference:
     """
     Convert a public video URL, S3 pre-signed URL, or asset:// ID into the
@@ -1387,9 +1644,9 @@ class Seedance2Omni:
     as reference material alongside a text prompt.
 
     Reference media in the prompt using:
-      @image1 … @image9   — uploaded image tensors
-      @video1 … @video3   — SEEDANCE2_VIDEO_REF from S3 nodes or Video Reference URL
-      @audio1 … @audio3   — audio URL, asset:// ID, data URL, or local audio file
+      @image1 ... @image9   - uploaded image tensors
+      @video1 ... @video3   - SEEDANCE2_VIDEO_REF from S3 nodes or Video Reference URL
+      @audio1 ... @audio3   - audio URL, asset:// ID, data URL, or local audio file
 
     BytePlus does not accept local video files in this request. Upload private
     videos through the S3 helper nodes and pass the generated video_ref.
@@ -1398,9 +1655,9 @@ class Seedance2Omni:
     Example:
       "A person @image1 walking on the beach at sunset, cinematic lighting"
 
-    Resolutions: 480p | 720p | 1080p
+    Resolutions: 480p | 720p | 1080p | 4k
     Aspect ratios: 21:9 | 16:9 | 4:3 | 1:1 | 3:4 | 9:16
-    Duration: 4 – 15 seconds
+    Duration: 4 - 15 seconds
     """
     @classmethod
     def INPUT_TYPES(cls):
@@ -1416,9 +1673,11 @@ class Seedance2Omni:
                 "default": "A person @image1 walking on the beach at sunset, cinematic lighting"}),
             "aspect_ratio": (["16:9", "9:16", "4:3", "3:4", "1:1", "21:9"], {"default": "16:9"}),
             "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
-                "tooltip": "BytePlus output resolution. 1080p is not supported by Seedance 2.0 Fast endpoints."}),
+                "tooltip": "BytePlus output resolution. 1080p/4k availability depends on the selected endpoint."}),
             "duration": ("INT", {"default": 5, "min": 4, "max": 15, "step": 1}),
             "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
+            "batch_count": ("INT", {"default": 1, "min": 1, "max": BATCH_MAX_COUNT, "step": 1,
+                "tooltip": "Create multiple tasks with different seeds. Cost and wait time scale with this count."}),
         }, "optional": {
             "api_key":      ("STRING", {"multiline": False, "default": ""}),
             "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
@@ -1428,13 +1687,13 @@ class Seedance2Omni:
             "image_1": ("IMAGE",), "image_2": ("IMAGE",), "image_3": ("IMAGE",),
             "image_4": ("IMAGE",), "image_5": ("IMAGE",), "image_6": ("IMAGE",),
             "image_7": ("IMAGE",), "image_8": ("IMAGE",), "image_9": ("IMAGE",),
-            # Reference videos (@video1 … @video3): structured video refs
+            # Reference videos (@video1 ... @video3): structured video refs
             "video_ref_1": (VIDEO_REF_TYPE, {"tooltip": video_ref_tip}),
             "video_ref_2": (VIDEO_REF_TYPE, {"tooltip": video_ref_tip}),
             "video_ref_3": (VIDEO_REF_TYPE, {"tooltip": video_ref_tip}),
             "delete_s3_references_after_generation": ("BOOLEAN", {"default": False,
                 "tooltip": "Delete connected S3 video_ref objects after this Omni generation succeeds."}),
-            # Reference audio (@audio1 … @audio3): dropdown + override string
+            # Reference audio (@audio1 ... @audio3): dropdown + override string
             "audio_file_1": (audio_files, {"default": _NONE_CHOICE, "tooltip": audio_tip}),
             "audio_url_1":  ("STRING", {"multiline": False, "default": "", "tooltip": audio_url_tip}),
             "audio_file_2": (audio_files, {"default": _NONE_CHOICE, "tooltip": audio_tip}),
@@ -1442,12 +1701,13 @@ class Seedance2Omni:
             "audio_file_3": (audio_files, {"default": _NONE_CHOICE, "tooltip": audio_tip}),
             "audio_url_3":  ("STRING", {"multiline": False, "default": "", "tooltip": audio_url_tip}),
         }}
-    RETURN_TYPES = ("STRING", "IMAGE", "STRING")
-    RETURN_NAMES = ("video_url", "first_frame", "request_id")
+    RETURN_TYPES = ("STRING", "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "first_frame", "request_id", "batch_json")
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, prompt, aspect_ratio, resolution, duration, seed, api_key="", endpoint="", generate_audio=True,
+    def run(self, prompt, aspect_ratio, resolution, duration, seed, batch_count=1,
+            api_key="", endpoint="", generate_audio=True,
             character_id="",
             image_1=None, image_2=None, image_3=None, image_4=None, image_5=None,
             image_6=None, image_7=None, image_8=None, image_9=None,
@@ -1483,7 +1743,7 @@ class Seedance2Omni:
         # For audio slots, prefer the dropdown selection; fall back to the URL/path override.
         def _pick(dropdown, url):
             if dropdown and dropdown != _NONE_CHOICE:
-                return dropdown  # filename inside ComfyUI/input/ — _resolve_media_ref handles it
+                return dropdown  # filename inside ComfyUI/input/ - _resolve_media_ref handles it
             return url
 
         legacy_s3_config = _parse_json_object(s3_config_json, "s3_config_json") if s3_config_json else {}
@@ -1518,7 +1778,7 @@ class Seedance2Omni:
             _pick(audio_file_3, audio_url_3),
         ]
 
-        # Resolve references (local path → upload, URL → passthrough)
+        # Resolve references (local path -> upload, URL -> passthrough)
         video_files = []
         for ref in video_refs:
             url, _ = _video_ref_url_and_s3(ref)
@@ -1542,12 +1802,9 @@ class Seedance2Omni:
         print(f"[Seedance2 Omni] PAYLOAD: {payload}")
         print(f"[Seedance2 Omni] Submitting "
               f"({len(images_list)} image(s), {len(video_files)} video(s), {len(audio_files)} audio(s))...")
-        rid = _submit(api_key, endpoint, payload)
-        result = _poll(api_key, rid)
-        url = _output_url(result)
-        print(f"[Seedance2 Omni] Done → {url}")
+        url, first_frame, rid, batch_json = _run_batch_generation(api_key, endpoint, payload, seed, batch_count, "Omni")
         _delete_s3_video_refs(video_refs, delete_s3_references_after_generation)
-        return (url, _first_frame(url), rid)
+        return (url, first_frame, rid, batch_json)
 
 
 class Seedance2Character:
@@ -1558,7 +1815,7 @@ class Seedance2Character:
     BytePlus direct Seedance video generation does not expose this operation.
 
     Use:
-      LoadImage → Seedance2ConsistentVideo
+      LoadImage -> Seedance2ConsistentVideo
     """
     @classmethod
     def INPUT_TYPES(cls):
@@ -1610,7 +1867,7 @@ class Seedance2Character:
             sheet_url = _image_url(result)
             if not sheet_url.startswith("http"):
                 raise ValueError("Not a URL")
-            print(f"[Seedance2 Character] Sheet ready → {sheet_url}")
+            print(f"[Seedance2 Character] Sheet ready -> {sheet_url}")
             sheet_image = _download_image(sheet_url)
         except Exception as e:
             print(f"[Seedance2 Character] No sheet image ({e}), using placeholder.")
@@ -1645,9 +1902,11 @@ class Seedance2ConsistentVideo:
                 "default": "@image1 walks through a sunlit garden, cinematic motion, 4K"}),
             "aspect_ratio": (["16:9", "9:16", "4:3", "3:4"], {"default": "16:9"}),
             "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
-                "tooltip": "BytePlus output resolution. 1080p is not supported by Seedance 2.0 Fast endpoints."}),
+                "tooltip": "BytePlus output resolution. 1080p/4k availability depends on the selected endpoint."}),
             "duration": ([5, 10, 15], {"default": 5}),
             "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
+            "batch_count": ("INT", {"default": 1, "min": 1, "max": BATCH_MAX_COUNT, "step": 1,
+                "tooltip": "Create multiple tasks with different seeds. Cost and wait time scale with this count."}),
         }, "optional": {
             "api_key":         ("STRING", {"multiline": False, "default": ""}),
             "endpoint": ("STRING", {"multiline": False, "default": DEFAULT_MODEL,
@@ -1661,18 +1920,19 @@ class Seedance2ConsistentVideo:
             "scene_image_2":   ("IMAGE",),
             "scene_image_3":   ("IMAGE",),
         }}
-    RETURN_TYPES = ("STRING", "IMAGE", "STRING")
-    RETURN_NAMES = ("video_url", "first_frame", "request_id")
+    RETURN_TYPES = ("STRING", "IMAGE", "STRING", "STRING")
+    RETURN_NAMES = ("video_url", "first_frame", "request_id", "batch_json")
     FUNCTION = "run"
     CATEGORY = "🌱 Seedance 2.0"
 
-    def run(self, prompt, aspect_ratio, resolution, duration, seed, api_key="", endpoint="", generate_audio=True,
+    def run(self, prompt, aspect_ratio, resolution, duration, seed, batch_count=1,
+            api_key="", endpoint="", generate_audio=True,
             sheet_image=None, sheet_url="", scene_image_2=None, scene_image_3=None):
         api_key = _load_api_key(api_key)
 
         images_list = []
 
-        # Character sheet goes first — either from tensor or URL
+        # Character sheet goes first - either from tensor or URL
         if sheet_image is not None:
             print("[Seedance2 ConsistentVideo] Encoding character sheet...")
             images_list.append(_upload_image(api_key, sheet_image))
@@ -1695,13 +1955,7 @@ class Seedance2ConsistentVideo:
 
         content_tail = [_content_image(url, "reference_image") for url in images_list]
         payload = _build_payload(endpoint, prompt, aspect_ratio, resolution, duration, generate_audio, seed, content_tail)
-
-        print(f"[Seedance2 ConsistentVideo] Submitting with {len(images_list)} image(s)...")
-        rid = _submit(api_key, endpoint, payload)
-        result = _poll(api_key, rid)
-        url = _output_url(result)
-        print(f"[Seedance2 ConsistentVideo] Done → {url}")
-        return (url, _first_frame(url), rid)
+        return _run_batch_generation(api_key, endpoint, payload, seed, batch_count, "ConsistentVideo")
 
 
 NODE_CLASS_MAPPINGS = {
@@ -1709,6 +1963,7 @@ NODE_CLASS_MAPPINGS = {
     "Seedance2BytePlusConfig":    Seedance2BytePlusConfig,
     "Seedance2RetrieveTask":      Seedance2RetrieveTask,
     "Seedance2TaskHistoryBrowser": Seedance2TaskHistoryBrowser,
+    "Seedance2BatchResultBrowser": Seedance2BatchResultBrowser,
     "Seedance2VideoReference":    Seedance2VideoReference,
     "Seedance2TextToVideo":       Seedance2TextToVideo,
     "Seedance2ImageToVideo":      Seedance2ImageToVideo,
@@ -1722,7 +1977,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "Seedance2TaskHistoryBrowser": "🌱 Seedance 2.0 Generation History Browser",
     "Seedance2ApiKey":            "🔑 Seedance 2.0 API Key",
-    "Seedance2BytePlusConfig":    "🌱 Seedance2BytePlusConfig",  
+    "Seedance2BytePlusConfig":    "🌱 Seedance2BytePlusConfig",
     "Seedance2RetrieveTask":      "🌱 Seedance 2.0 Retrieve Task Result",
     "Seedance2VideoReference":    "🌱 Seedance 2.0 Video Reference URL",
     "Seedance2TextToVideo":       "🌱 Seedance 2.0 Text-to-Video",
@@ -1734,3 +1989,4 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Seedance2ConsistentVideo":   "🌱 Seedance 2.0 Consistent Character Video",
 }
 NODE_DISPLAY_NAME_MAPPINGS["Seedance2BytePlusConfig"] = "🌱 Seedance 2.0 BytePlus Config"
+NODE_DISPLAY_NAME_MAPPINGS["Seedance2BatchResultBrowser"] = "🌱 Seedance 2.0 Batch Result Browser"

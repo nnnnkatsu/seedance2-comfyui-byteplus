@@ -17,7 +17,7 @@ The node pack is designed for users who have a BytePlus ModelArk API key and an 
 - Creates Seedance video tasks with `POST /api/v3/contents/generations/tasks`.
 - Polls task status with `GET /api/v3/contents/generations/tasks/{id}`.
 - Uses an `endpoint` UI field for your BytePlus `ep-...` endpoint ID. Internally this is sent to the official API field named `model`.
-- Adds output `resolution` controls: `480p`, `720p`, `1080p`.
+- Adds output `resolution` controls: `480p`, `720p`, `1080p`, `4k`.
 - Adds `seed` controls to generation nodes.
 - Keeps `watermark` fixed to `false`.
 - Adds AWS S3 upload, browse, preview, and cleanup helper nodes for private local reference videos.
