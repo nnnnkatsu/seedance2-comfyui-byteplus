@@ -64,6 +64,7 @@ BASE_URL_ENV_VARS = ("BYTEPLUS_ARK_BASE_URL", "ARK_BASE_URL")
 RESOLUTION_OPTIONS = ["480p", "720p", "1080p", "4k"]
 DEFAULT_RESOLUTION = "480p"
 VIDEO_REF_TYPE = "SEEDANCE2_VIDEO_REF"
+BATCH_JSON_TYPE = "SEEDANCE2_BATCH_JSON"
 QUALITY_TO_RESOLUTION = {
     "basic": "480p",
     "high": "720p",
@@ -649,6 +650,45 @@ def _batch_items_from_json(batch_json):
     if not isinstance(items, list):
         raise ValueError("batch_json.items must be a list.")
     return data, [item for item in items if isinstance(item, dict)]
+
+
+def _batch_json_from_ref(batch_ref):
+    if isinstance(batch_ref, dict):
+        value = batch_ref.get("batch_json") or batch_ref.get("json") or ""
+    else:
+        value = batch_ref
+    return str(value or "").strip()
+
+
+def _batch_ref_from_json(batch_json):
+    value = str(batch_json or "").strip()
+    digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:12] if value else ""
+    return {
+        "type": BATCH_JSON_TYPE,
+        "batch_id": digest,
+        "batch_json": value,
+    }
+
+
+def _batch_viewer_summary(batch, raw_items):
+    label = str(batch.get("label") or "")
+    model = str(batch.get("model") or "")
+    resolution = str(batch.get("resolution") or "")
+    ratio = str(batch.get("ratio") or "")
+    duration = batch.get("duration", "")
+    lines = [
+        f"Batch: {label or '(unknown)'}",
+        f"Items: {len(raw_items)}",
+        f"Model: {model or '(unknown)'}",
+        f"Settings: {resolution or '?'} {ratio or '?'} {duration}s",
+    ]
+    for index, item in enumerate(raw_items, 1):
+        status = str(item.get("status") or "(unknown)")
+        request_id = str(item.get("request_id") or "(no id)")
+        seed = item.get("seed", "")
+        has_url = "yes" if str(item.get("video_url") or "") else "no"
+        lines.append(f"{index:02d} {request_id}  {status}  seed {seed}  video_url: {has_url}")
+    return "\n".join(lines)
 
 
 def _batch_browser_item(item, index, selected=False):
@@ -1541,6 +1581,44 @@ class Seedance2TaskHistoryBrowser:
         }
 
 
+class Seedance2BatchJsonViewer:
+    """
+    Freeze and inspect a batch_json string before browsing individual results.
+
+    Connect a generation node's STRING batch_json here first, run this node,
+    then connect this node's typed batch_json output to Batch Result Browser.
+    """
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "batch_json": ("STRING", {"multiline": True, "default": "",
+                "tooltip": "batch_json output from a Seedance generation node."}),
+        }}
+
+    RETURN_TYPES = (BATCH_JSON_TYPE,)
+    RETURN_NAMES = ("batch_json",)
+    FUNCTION = "run"
+    CATEGORY = "🌱 Seedance 2.0"
+    OUTPUT_NODE = True
+
+    def run(self, batch_json):
+        value = str(batch_json or "").strip()
+        if not value:
+            return {
+                "ui": {"text": ["No batch_json provided. Connect a generation node here and run this viewer first."]},
+                "result": (_batch_ref_from_json(""),),
+            }
+        try:
+            batch, raw_items = _batch_items_from_json(value)
+            summary = _batch_viewer_summary(batch, raw_items)
+        except Exception as e:
+            summary = f"Invalid batch_json: {e}"
+        return {
+            "ui": {"text": [summary]},
+            "result": (_batch_ref_from_json(value),),
+        }
+
+
 class Seedance2BatchResultBrowser:
     """
     Browse one batch_json output from a generation node.
@@ -1551,8 +1629,8 @@ class Seedance2BatchResultBrowser:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "batch_json": ("STRING", {"multiline": True, "default": "",
-                "tooltip": "batch_json output from a Seedance generation node."}),
+            "batch_json": (BATCH_JSON_TYPE, {
+                "tooltip": "Connect from Seedance 2.0 Batch JSON Viewer. Direct generator batch_json links are intentionally blocked."}),
             "selected_index": ("INT", {"default": 1, "min": 1, "max": BATCH_MAX_COUNT, "step": 1}),
             "selected_request_id": ("STRING", {"multiline": False, "default": "",
                 "tooltip": "Stable request_id selected by the batch list."}),
@@ -1565,10 +1643,11 @@ class Seedance2BatchResultBrowser:
     OUTPUT_NODE = True
 
     def run(self, batch_json, selected_index, selected_request_id):
-        if not str(batch_json or "").strip():
+        batch_json = _batch_json_from_ref(batch_json)
+        if not batch_json:
             return {
                 "ui": {
-                    "text": ["No batch_json provided."],
+                    "text": ["No batch_json provided. Connect Seedance 2.0 Batch JSON Viewer to this node."],
                     "batch_items_json": ["[]"],
                     "selected_request_id": [""],
                     "selected_index": [""],
@@ -1993,6 +2072,7 @@ NODE_CLASS_MAPPINGS = {
     "Seedance2BytePlusConfig":    Seedance2BytePlusConfig,
     "Seedance2RetrieveTask":      Seedance2RetrieveTask,
     "Seedance2TaskHistoryBrowser": Seedance2TaskHistoryBrowser,
+    "Seedance2BatchJsonViewer":   Seedance2BatchJsonViewer,
     "Seedance2BatchResultBrowser": Seedance2BatchResultBrowser,
     "Seedance2VideoReference":    Seedance2VideoReference,
     "Seedance2TextToVideo":       Seedance2TextToVideo,
@@ -2009,6 +2089,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Seedance2ApiKey":            "🔑 Seedance 2.0 API Key",
     "Seedance2BytePlusConfig":    "🌱 Seedance2BytePlusConfig",
     "Seedance2RetrieveTask":      "🌱 Seedance 2.0 Retrieve Task Result",
+    "Seedance2BatchJsonViewer":   "🌱 Seedance 2.0 Batch JSON Viewer",
     "Seedance2VideoReference":    "🌱 Seedance 2.0 Video Reference URL",
     "Seedance2TextToVideo":       "🌱 Seedance 2.0 Text-to-Video",
     "Seedance2ImageToVideo":      "🌱 Seedance 2.0 Image-to-Video",

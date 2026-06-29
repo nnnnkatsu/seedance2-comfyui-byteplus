@@ -259,7 +259,7 @@ function ensureListWidget(node) {
 
             if (!this.items.length) {
                 ctx.fillStyle = "#888";
-                ctx.fillText("Connect batch_json and run this node.", x + 8, y + 58);
+                ctx.fillText("Connect Batch JSON Viewer and run this node.", x + 8, y + 58);
                 ctx.restore();
                 return;
             }
