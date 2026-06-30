@@ -19,6 +19,8 @@ The node pack is designed for users who have a BytePlus ModelArk API key and an 
 - Uses an `endpoint` UI field for your BytePlus `ep-...` endpoint ID. Internally this is sent to the official API field named `model`.
 - Adds output `resolution` controls: `480p`, `720p`, `1080p`, `4k`.
 - Adds `seed` controls to generation nodes.
+- Uses 4-15 second duration controls with 1 second steps.
+- Extends videos from the previous video's extracted last frame.
 - Keeps `watermark` fixed to `false`.
 - Adds AWS S3 upload, browse, preview, and cleanup helper nodes for private local reference videos.
 - Uses a structured `video_ref` connection for reference videos so S3 cleanup metadata travels with the URL.
@@ -35,7 +37,7 @@ The node pack is designed for users who have a BytePlus ModelArk API key and an 
 | `Seedance 2.0 First/Last Frame-to-Video` | Generate from a first frame and optional last frame. This mode cannot be mixed with normal reference images, reference videos, or reference audio. |
 | `Seedance 2.0 Omni Reference` | Generate using text plus image, video, and audio references. |
 | `Seedance 2.0 Consistent Character Video` | Generate using a main reference image or `sheet_url`. |
-| `Seedance 2.0 Extend` | Continue from a completed task ID, public video URL, or `asset://...` reference. |
+| `Seedance 2.0 Extend` | Continue from a completed task ID or downloadable public video URL by extracting the previous video's last frame as the new first frame. |
 | `Seedance 2.0 Retrieve Task Result` | Retrieve a recent task by `cgt-...` ID. |
 | `Seedance 2.0 Generation History Browser` | Browse recent BytePlus tasks in a list, select one, preview it, and output `video_url` plus `video_ref`. |
 | `Seedance 2.0 Video Reference URL` | Convert a public/S3/`asset://` video URL into `video_ref`. |

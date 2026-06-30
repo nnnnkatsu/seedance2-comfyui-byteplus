@@ -139,6 +139,8 @@ def _sanitize_prompt_subset(prompt, node_ids):
         if isinstance(inputs, dict):
             for key, value in list(inputs.items()):
                 inputs[key] = _sanitize_value(value, key)
+            if _node_type(copied) in GENERATION_NODE_TYPES:
+                inputs["batch_count"] = _normalize_batch_count(inputs.get("batch_count"))
         subset[str(node_id)] = copied
     return subset
 
@@ -147,13 +149,34 @@ SECRET_WIDGET_INDEXES = {
     "Seedance2ApiKey": {0},
     "Seedance2BytePlusConfig": {0},
     "Seedance2S3Config": {0, 1},
-    "Seedance2TextToVideo": {6},
-    "Seedance2ImageToVideo": {6},
-    "Seedance2FirstLastFrameToVideo": {6},
-    "Seedance2Extend": {5},
-    "Seedance2Omni": {6},
-    "Seedance2ConsistentVideo": {6},
+    "Seedance2TextToVideo": {7},
+    "Seedance2ImageToVideo": {7},
+    "Seedance2FirstLastFrameToVideo": {7},
+    "Seedance2Extend": {6},
+    "Seedance2Omni": {7},
+    "Seedance2ConsistentVideo": {7},
 }
+
+BATCH_COUNT_WIDGET_INDEXES = {
+    "Seedance2TextToVideo": 6,
+    "Seedance2ImageToVideo": 6,
+    "Seedance2FirstLastFrameToVideo": 6,
+    "Seedance2Extend": 5,
+    "Seedance2Omni": 6,
+    "Seedance2ConsistentVideo": 6,
+}
+
+
+def _normalize_batch_count(value):
+    if _linked_node_id(value) is not None:
+        return value
+    if value in (None, ""):
+        return 1
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return count if count >= 1 else 1
 
 
 def _sanitize_workflow_node(node):
@@ -164,11 +187,16 @@ def _sanitize_workflow_node(node):
         for idx in SECRET_WIDGET_INDEXES.get(node_type, set()):
             if 0 <= idx < len(widgets):
                 widgets[idx] = ""
+        batch_index = BATCH_COUNT_WIDGET_INDEXES.get(node_type)
+        if batch_index is not None and 0 <= batch_index < len(widgets):
+            widgets[batch_index] = _normalize_batch_count(widgets[batch_index])
         for i, value in enumerate(widgets):
             widgets[i] = _sanitize_value(value)
     elif isinstance(widgets, dict):
         for key, value in list(widgets.items()):
             widgets[key] = _sanitize_value(value, key)
+        if node_type in GENERATION_NODE_TYPES:
+            widgets["batch_count"] = _normalize_batch_count(widgets.get("batch_count"))
     return copied
 
 
@@ -273,7 +301,7 @@ def _seedance_summary(prompt, generation_ids):
             "resolution": _plain_input(inputs, "resolution"),
             "aspect_ratio": _plain_input(inputs, "aspect_ratio"),
             "duration": _plain_input(inputs, "duration"),
-            "batch_count": _plain_input(inputs, "batch_count"),
+            "batch_count": _normalize_batch_count(_plain_input(inputs, "batch_count")),
             "media_inputs": media_inputs,
         })
     return {

@@ -1,7 +1,7 @@
 [project]
 name = "seedance2-comfyui-byteplus"
 description = "ComfyUI nodes for BytePlus ModelArk Seedance 2.0 video generation with S3 reference video workflow support."
-version = "1.4.2"
+version = "1.4.3"
 license = { file = "LICENSE" }
 dependencies = [
     "requests>=2.28.0",

@@ -5,7 +5,7 @@ Focused nodes for Seedance 2.0 video generation via BytePlus ModelArk.
 
   Seedance2TextToVideo        - ModelArk video generation task
   Seedance2ImageToVideo       - ModelArk video generation task
-  Seedance2Extend             - Re-submit using source video as reference_video
+  Seedance2Extend             - Continue from a source video's last frame
   Seedance2RetrieveTask       - Retrieve a recent ModelArk task result
   Seedance2Omni               - ModelArk multimodal reference task
   Seedance2Character          - Not supported by direct BytePlus video API
@@ -78,6 +78,7 @@ TASK_HISTORY_PATH = "~/.byteplus/seedance2-comfyui-tasks.json"
 TASK_HISTORY_LIMIT = 50
 TASK_OUTPUT_TTL_SECONDS = 24 * 60 * 60
 BATCH_MAX_COUNT = 10
+DURATION_INPUT = ("INT", {"default": 5, "min": 4, "max": 15, "step": 1})
 
 def _list_input_files(extensions):
     """Return sorted list of files in ComfyUI/input/ matching the given extensions."""
@@ -843,9 +844,11 @@ def _check(resp):
             raise RuntimeError(f"API {resp.status_code}: {resp.text[:300]}")
 
 
-def _first_frame(video_url):
+def _video_frame(video_url, *, last=False, blank_on_error=True):
     try:
         import tempfile, cv2
+        if str(video_url or "").lower().startswith("asset://"):
+            raise RuntimeError("asset:// video cannot be downloaded for frame extraction")
         r = requests.get(video_url, timeout=180, stream=True)
         r.raise_for_status()
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
@@ -853,14 +856,41 @@ def _first_frame(video_url):
                 if chunk: tmp.write(chunk)
             path = tmp.name
         cap = cv2.VideoCapture(path)
-        ret, frame = cap.read()
+        ret = False
+        frame = None
+        if last:
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            if frame_count > 1:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, frame_count - 1))
+                ret, frame = cap.read()
+            if not ret:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                while True:
+                    ok, candidate = cap.read()
+                    if not ok:
+                        break
+                    ret = True
+                    frame = candidate
+        else:
+            ret, frame = cap.read()
         cap.release(); os.remove(path)
         if not ret: raise RuntimeError("no frame")
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         return torch.from_numpy(rgb).unsqueeze(0)
     except Exception as e:
-        print(f"[Seedance2] first frame failed: {e}")
+        label = "last frame" if last else "first frame"
+        print(f"[Seedance2] {label} failed: {e}")
+        if not blank_on_error:
+            return None
         return torch.zeros(1, 64, 64, 3)
+
+
+def _first_frame(video_url):
+    return _video_frame(video_url, last=False)
+
+
+def _last_frame(video_url):
+    return _video_frame(video_url, last=True, blank_on_error=False)
 
 
 def _video_preview_ui(filename, subfolder, folder_type="output"):
@@ -1165,7 +1195,7 @@ class Seedance2TextToVideo:
     Generate video purely from a text prompt.
     Resolutions: 480p | 720p | 1080p | 4k
     Aspect ratios: 16:9 | 9:16 | 4:3 | 3:4
-    Duration: 5 | 10 | 15 seconds
+    Duration: 4 - 15 seconds
     """
     @classmethod
     def INPUT_TYPES(cls):
@@ -1175,7 +1205,7 @@ class Seedance2TextToVideo:
             "aspect_ratio": (["16:9", "9:16", "4:3", "3:4"], {"default": "16:9"}),
             "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
                 "tooltip": "BytePlus output resolution. 1080p/4k availability depends on the selected endpoint."}),
-            "duration": ([5, 10, 15], {"default": 5}),
+            "duration": DURATION_INPUT,
             "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
             "batch_count": ("INT", {"default": 1, "min": 1, "max": BATCH_MAX_COUNT, "step": 1,
                 "tooltip": "Create multiple tasks with different seeds. Cost and wait time scale with this count."}),
@@ -1214,7 +1244,7 @@ class Seedance2ImageToVideo:
             "aspect_ratio": (["16:9", "9:16", "4:3", "3:4"], {"default": "16:9"}),
             "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
                 "tooltip": "BytePlus output resolution. 1080p/4k availability depends on the selected endpoint."}),
-            "duration": ([5, 10, 15], {"default": 5}),
+            "duration": DURATION_INPUT,
             "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
             "batch_count": ("INT", {"default": 1, "min": 1, "max": BATCH_MAX_COUNT, "step": 1,
                 "tooltip": "Create multiple tasks with different seeds. Cost and wait time scale with this count."}),
@@ -1269,7 +1299,7 @@ class Seedance2FirstLastFrameToVideo:
                 "tooltip": "Use adaptive to follow the first frame aspect ratio."}),
             "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
                 "tooltip": "BytePlus output resolution. 1080p/4k availability depends on the selected endpoint."}),
-            "duration": ("INT", {"default": 5, "min": 4, "max": 15, "step": 1}),
+            "duration": DURATION_INPUT,
             "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
             "batch_count": ("INT", {"default": 1, "min": 1, "max": BATCH_MAX_COUNT, "step": 1,
                 "tooltip": "Create multiple tasks with different seeds. Cost and wait time scale with this count."}),
@@ -1305,7 +1335,7 @@ class Seedance2Extend:
     Extend a previously generated Seedance 2.0 video.
     Pass the request_id from a completed generation.
     Optionally provide a prompt to guide the continuation.
-    Duration: 5 | 10 | 15 seconds added to the original.
+    Duration: 4 - 15 seconds. Uses the previous video's last frame as the new first frame.
     """
     @classmethod
     def INPUT_TYPES(cls):
@@ -1314,7 +1344,7 @@ class Seedance2Extend:
                 "tooltip": "request_id from a completed Seedance 2.0 generation"}),
             "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
                 "tooltip": "BytePlus output resolution. 1080p/4k availability depends on the selected endpoint."}),
-            "duration": ([5, 10, 15], {"default": 5}),
+            "duration": DURATION_INPUT,
             "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
             "batch_count": ("INT", {"default": 1, "min": 1, "max": BATCH_MAX_COUNT, "step": 1,
                 "tooltip": "Create multiple extension tasks with different seeds. Cost and wait time scale with this count."}),
@@ -1344,8 +1374,15 @@ class Seedance2Extend:
             if source_result.get("status") != "succeeded":
                 source_result = _poll(api_key, source)
             source_url = _output_url(source_result)
-        extend_prompt = prompt.strip() or "Continue the reference video naturally."
-        content_tail = [_content_video(source_url, "reference_video")]
+        print("[Seedance2 Extend] Extracting last frame from source video...")
+        last_frame = _last_frame(source_url)
+        if last_frame is None:
+            raise RuntimeError(
+                "[Seedance2 Extend] Could not extract the source video's last frame. "
+                "Use a valid, non-expired http(s) video URL or a recent request_id."
+            )
+        extend_prompt = prompt.strip() or "Continue naturally from this frame."
+        content_tail = [_content_image(_upload_image(api_key, last_frame), "first_frame")]
         payload = _build_payload(endpoint, extend_prompt, "adaptive", resolution, duration, generate_audio, seed, content_tail)
         return _run_batch_generation(api_key, endpoint, payload, seed, batch_count, "Extend")
 
@@ -1783,7 +1820,7 @@ class Seedance2Omni:
             "aspect_ratio": (["16:9", "9:16", "4:3", "3:4", "1:1", "21:9"], {"default": "16:9"}),
             "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
                 "tooltip": "BytePlus output resolution. 1080p/4k availability depends on the selected endpoint."}),
-            "duration": ("INT", {"default": 5, "min": 4, "max": 15, "step": 1}),
+            "duration": DURATION_INPUT,
             "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
             "batch_count": ("INT", {"default": 1, "min": 1, "max": BATCH_MAX_COUNT, "step": 1,
                 "tooltip": "Create multiple tasks with different seeds. Cost and wait time scale with this count."}),
@@ -2012,7 +2049,7 @@ class Seedance2ConsistentVideo:
             "aspect_ratio": (["16:9", "9:16", "4:3", "3:4"], {"default": "16:9"}),
             "resolution": (RESOLUTION_OPTIONS, {"default": DEFAULT_RESOLUTION,
                 "tooltip": "BytePlus output resolution. 1080p/4k availability depends on the selected endpoint."}),
-            "duration": ([5, 10, 15], {"default": 5}),
+            "duration": DURATION_INPUT,
             "seed": ("INT", {"default": -1, "min": SEED_MIN, "max": SEED_MAX, "control_after_generate": True}),
             "batch_count": ("INT", {"default": 1, "min": 1, "max": BATCH_MAX_COUNT, "step": 1,
                 "tooltip": "Create multiple tasks with different seeds. Cost and wait time scale with this count."}),
